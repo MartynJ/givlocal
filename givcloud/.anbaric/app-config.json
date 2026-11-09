@@ -1,0 +1,5 @@
+{
+  "name": "givlocal",
+  "internalPort": 3000,
+  "public": true
+}

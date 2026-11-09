@@ -1,0 +1,19 @@
+# Dependencies and caches
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+
+# Logs
+*.log
+
+# Local data: inverter readings database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Secrets: the collector's upload token
+givlocal/upload.conf
+.env

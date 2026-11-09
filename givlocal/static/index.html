@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GivLocal</title>
+<style>
+:root{
+  color-scheme: light;
+  --bg:#f4f4f2; --surface:#fcfcfb; --line:#e4e3df; --grid:#ecebe7;
+  --text:#0b0b0b; --text2:#52514e; --muted:#85847f;
+  --home:#2a78d6; --grid-c:#eb6834; --batt:#1baf7a; --solar:#eda100; --export:#e87ba4;
+  --good:#1a8a3a; --warn:#b26b00; --bad:#c62f2f;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --bg:#111110; --surface:#1a1a19; --line:#2c2c2a; --grid:#262624;
+    --text:#f0efec; --text2:#c3c2b7; --muted:#8d8c85;
+    --home:#3987e5; --grid-c:#d95926; --batt:#199e70; --solar:#c98500; --export:#d55181;
+    --good:#4cbf6b; --warn:#e0a030; --bad:#e66767;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --bg:#111110; --surface:#1a1a19; --line:#2c2c2a; --grid:#262624;
+  --text:#f0efec; --text2:#c3c2b7; --muted:#8d8c85;
+  --home:#3987e5; --grid-c:#d95926; --batt:#199e70; --solar:#c98500; --export:#d55181;
+  --good:#4cbf6b; --warn:#e0a030; --bad:#e66767;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;padding:20px 16px 48px}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+h1{font-size:20px;margin:0;letter-spacing:-.01em}
+h1 small{font-weight:500;color:var(--muted);font-size:13px;margin-left:8px}
+h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text2);margin:0 0 12px}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--line);border-radius:999px;background:var(--surface);font-size:13px;color:var(--text2)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.dot.ok{background:var(--good)} .dot.stale{background:var(--warn)} .dot.down{background:var(--bad)}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(12,1fr)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px;min-width:0}
+.c8{grid-column:span 8}.c4{grid-column:span 4}.c12{grid-column:span 12}.c6{grid-column:span 6}
+@media (max-width:900px){.c8,.c4,.c6{grid-column:span 12}}
+/* power flow */
+.flow{position:relative;width:100%;max-width:560px;margin:0 auto;aspect-ratio:1.45}
+.flow svg{position:absolute;inset:0;width:100%;height:100%}
+.flow.nosolar{aspect-ratio:2.1}
+.flow.nosolar .n-side{top:34%!important}
+.flow.nosolar .n-batt{top:78%!important}
+.node{position:absolute;transform:translate(-50%,-29px);text-align:center;width:120px}
+.node .ic{width:58px;height:58px;border-radius:50%;margin:0 auto 4px;position:relative;z-index:1;display:grid;place-items:center;border:2px solid currentColor;background:var(--surface)}
+.node .ic svg{width:26px;height:26px;position:static}
+.node .v{font-size:20px;font-weight:650;color:var(--text);font-variant-numeric:tabular-nums}
+.node .l{font-size:12px;color:var(--text2)}
+.path{fill:none;stroke:var(--line);stroke-width:3}
+.path.on{stroke-dasharray:6 8;animation:flow 1s linear infinite;stroke-width:3}
+.path.rev{animation-direction:reverse}
+@keyframes flow{to{stroke-dashoffset:-14}}
+@media (prefers-reduced-motion:reduce){.path.on{animation:none}}
+/* battery */
+.soc{display:flex;align-items:baseline;gap:8px}
+.soc b{font-size:52px;font-weight:700;letter-spacing:-.03em;font-variant-numeric:tabular-nums;line-height:1}
+.soc span{color:var(--text2)}
+.bar{height:12px;border-radius:6px;background:var(--grid);overflow:hidden;margin:14px 0 16px}
+.bar i{display:block;height:100%;background:var(--batt);border-radius:6px;transition:width .6s}
+.kv{display:grid;grid-template-columns:1fr auto;gap:7px 12px;font-size:14px}
+.kv dt{color:var(--text2)} .kv dd{margin:0;font-variant-numeric:tabular-nums;text-align:right}
+/* stat tiles */
+.tiles{display:grid;grid-template-columns:repeat(var(--n,5),1fr);gap:10px}
+@media (max-width:900px){.tiles{grid-template-columns:repeat(3,1fr)}}
+@media (max-width:480px){.tiles{grid-template-columns:repeat(2,1fr)}}
+.tile{border:1px solid var(--line);border-radius:10px;padding:12px}
+.tile .l{font-size:12px;color:var(--text2);display:flex;align-items:center;gap:6px}
+.tile .l i{width:8px;height:8px;border-radius:2px;display:inline-block}
+.tile .v{font-size:22px;font-weight:650;font-variant-numeric:tabular-nums;margin-top:2px}
+.tile .v small{font-size:13px;font-weight:500;color:var(--muted);margin-left:2px}
+/* toolbar + charts */
+.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.toolbar h2{margin:0 auto 0 0}
+button,input[type=date],select{font:inherit;font-size:13px;color:var(--text);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:6px 10px;cursor:pointer}
+button:hover{border-color:var(--muted)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--text2);margin-bottom:8px}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:14px;height:3px;border-radius:2px;display:inline-block}
+.legend i.sq{width:10px;height:10px;border-radius:2px}
+.chart{position:relative;height:280px}
+.chart.sm{height:150px}
+.note{font-size:12px;color:var(--muted);margin-top:8px}
+.empty{display:grid;place-items:center;height:100%;color:var(--muted);font-size:14px;text-align:center;padding:20px}
+.cells{display:flex;gap:3px;align-items:flex-end;height:90px;margin-top:6px}
+.cells div{flex:1;background:var(--batt);border-radius:3px 3px 0 0;min-height:4px;position:relative}
+details{margin-top:4px} summary{cursor:pointer;color:var(--text2);font-size:13px}
+pre{font-size:11px;overflow:auto;max-height:340px;background:var(--bg);padding:10px;border-radius:8px}
+table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:right}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--text2);font-weight:600}
+.tablewrap{overflow-x:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>GivLocal <small id="serial">connecting…</small></h1>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span class="pill"><span class="dot" id="dot"></span><span id="state">Connecting to inverter</span></span>
+      <button id="theme" title="Toggle light / dark">◐</button>
+    </div>
+  </header>
+
+  <div class="grid">
+    <section class="card c8">
+      <h2>Live power flow</h2>
+      <div class="flow" id="flow">
+        <svg viewBox="0 0 580 400" preserveAspectRatio="none" aria-hidden="true">
+          <path id="p-solar" class="path" d="M290 200 L290 62"/>
+          <path id="p-grid"  class="path" d="M290 200 L78 200"/>
+          <path id="p-home"  class="path" d="M290 200 L502 200"/>
+          <path id="p-batt"  class="path" d="M290 200 L290 338"/>
+          <circle id="hub" cx="290" cy="200" r="7" fill="var(--muted)"/>
+        </svg>
+        <div class="node" style="left:50%;top:15.5%;color:var(--solar)" id="n-solar">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></div>
+          <div class="v" id="v-solar">–</div><div class="l">Solar</div>
+        </div>
+        <div class="node n-side" style="left:13%;top:50%;color:var(--grid-c)">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 22 12 2l4 20M6 8h12M5 14h14M9.5 14 12 22l2.5-8"/></svg></div>
+          <div class="v" id="v-grid">–</div><div class="l" id="l-grid">Grid</div>
+        </div>
+        <div class="node n-side" style="left:87%;top:50%;color:var(--home)">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11 12 3l9 8v10H3z"/><path d="M9 21v-6h6v6"/></svg></div>
+          <div class="v" id="v-home">–</div><div class="l">Home</div>
+        </div>
+        <div class="node n-batt" style="left:50%;top:84.5%;color:var(--batt)">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="7" width="16" height="10" rx="2"/><path d="M22 11v2"/><path id="ic-fill" d="M6 10v4"/></svg></div>
+          <div class="v" id="v-batt">–</div><div class="l" id="l-batt">Battery</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card c4">
+      <h2>Battery</h2>
+      <div class="soc"><b id="soc">–</b><span>% charged</span></div>
+      <div class="bar"><i id="socbar" style="width:0"></i></div>
+      <dl class="kv">
+        <dt>Status</dt><dd id="b-state">–</dd>
+        <dt>Power</dt><dd id="b-power">–</dd>
+        <dt>Voltage / current</dt><dd id="b-vi">–</dd>
+        <dt>Battery temp</dt><dd id="b-temp">–</dd>
+        <dt>Inverter temp</dt><dd id="i-temp">–</dd>
+        <dt>Grid</dt><dd id="g-vf">–</dd>
+        <dt>Inverter status</dt><dd id="i-status">–</dd>
+      </dl>
+    </section>
+
+    <section class="card c12">
+      <h2>Today</h2>
+      <div class="tiles" id="tiles">
+        <div class="tile"><div class="l"><i style="background:var(--home)"></i>Home used</div><div class="v" id="t-home">–</div></div>
+        <div class="tile"><div class="l"><i style="background:var(--grid-c)"></i>Imported</div><div class="v" id="t-imp">–</div></div>
+        <div class="tile"><div class="l"><i style="background:var(--export)"></i>Exported</div><div class="v" id="t-exp">–</div></div>
+        <div class="tile"><div class="l"><i style="background:var(--batt)"></i>Charged</div><div class="v" id="t-chg">–</div></div>
+        <div class="tile"><div class="l"><i style="background:var(--batt)"></i>Discharged</div><div class="v" id="t-dis">–</div></div>
+        <div class="tile" id="tile-pv" hidden><div class="l"><i style="background:var(--solar)"></i>Solar</div><div class="v" id="t-pv">–</div></div>
+      </div>
+      <p class="note" id="home-note">“Home used” is worked out from the samples GivLocal has logged today, so it only covers time the app has been running.</p>
+    </section>
+
+    <section class="card c12">
+      <div class="toolbar">
+        <h2>Power over the day</h2>
+        <button id="prev" aria-label="Previous day">‹</button>
+        <input type="date" id="date">
+        <button id="next" aria-label="Next day">›</button>
+        <button id="today">Today</button>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--home)"></i>Home</span>
+        <span><i style="background:var(--grid-c)"></i>Grid (+ import / − export)</span>
+        <span><i style="background:var(--batt)"></i>Battery (+ discharge / − charge)</span>
+        <span id="lg-solar"><i style="background:var(--solar)"></i>Solar</span>
+      </div>
+      <div class="chart"><canvas id="powerChart"></canvas><div class="empty" id="powerEmpty" hidden></div></div>
+      <h2 style="margin-top:18px">Battery charge</h2>
+      <div class="chart sm"><canvas id="socChart"></canvas></div>
+    </section>
+
+    <section class="card c8">
+      <div class="toolbar">
+        <h2>Daily energy</h2>
+        <select id="range"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option><option value="365">1 year</option></select>
+        <button id="csv">Export CSV</button>
+      </div>
+      <div class="legend">
+        <span><i class="sq" style="background:var(--home)"></i>Home used</span>
+        <span><i class="sq" style="background:var(--grid-c)"></i>Imported</span>
+        <span><i class="sq" style="background:var(--export)"></i>Exported</span>
+      </div>
+      <div class="chart"><canvas id="daysChart"></canvas></div>
+      <details><summary>Show as table</summary><div class="tablewrap"><table id="daysTable"></table></div></details>
+    </section>
+
+    <section class="card c4">
+      <h2>Battery cells</h2>
+      <div id="cellsBox"><div class="empty" style="height:90px">Waiting for battery data…</div></div>
+      <dl class="kv" style="margin-top:12px">
+        <dt>Cell spread</dt><dd id="c-spread">–</dd>
+        <dt>Cell temps</dt><dd id="c-temps">–</dd>
+        <dt>Lifetime battery throughput</dt><dd id="c-thru">–</dd>
+        <dt>Lifetime import</dt><dd id="c-imp">–</dd>
+        <dt>Lifetime export</dt><dd id="c-exp">–</dd>
+      </dl>
+    </section>
+
+    <section class="card c12">
+      <h2>Connection</h2>
+      <dl class="kv" id="conn"></dl>
+      <details><summary>Raw registers (for troubleshooting)</summary><pre id="raw">–</pre></details>
+    </section>
+  </div>
+</div>
+
+<script src="chart.umd.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const kw = w => w == null ? '–' : (Math.abs(w) >= 1000 ? (w/1000).toFixed(2)+' kW' : Math.round(w)+' W');
+const kwh = v => v == null ? '–' : `${v.toFixed(1)}<small>kWh</small>`;
+const fmtAge = s => s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.round(s/60)} min` : `${(s/3600).toFixed(1)} h`;
+const ymd = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+
+// theme toggle (remembered per browser)
+try { const t = localStorage.getItem('theme'); if (t) document.documentElement.dataset.theme = t; } catch(e){}
+$('theme').onclick = () => {
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  const cur = document.documentElement.dataset.theme || (dark ? 'dark' : 'light');
+  const nxt = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = nxt;
+  try { localStorage.setItem('theme', nxt); } catch(e){}
+  restyleCharts();
+};
+
+// ---------- live
+// The AIO has no PV input; solar only appears if the inverter ever reports PV power.
+let hasSolar = false;
+function showSolar(){
+  $('n-solar').hidden = !hasSolar; $('p-solar').style.display = hasSolar ? '' : 'none';
+  $('flow').classList.toggle('nosolar', !hasSolar);
+  const cy = hasSolar ? 200 : 136, by = hasSolar ? 338 : 312;   // viewBox units (400 tall)
+  $('hub').setAttribute('cy', cy);
+  $('p-grid').setAttribute('d', `M290 ${cy} L78 ${cy}`);
+  $('p-home').setAttribute('d', `M290 ${cy} L502 ${cy}`);
+  $('p-batt').setAttribute('d', `M290 ${cy} L290 ${by}`);
+  $('tile-pv').hidden = !hasSolar; $('tiles').style.setProperty('--n', hasSolar ? 6 : 5);
+}
+async function live(){
+  let j; try { j = await (await fetch('api/live')).json(); } catch(e){ $('dot').className='dot down'; $('state').textContent='GivLocal service not reachable'; return; }
+  const L = j.live, S = j.stats, age = L.ts_live ? j.now - L.ts_live : null;
+  $('serial').textContent = j.inverter_serial ? `Inverter ${j.inverter_serial} · dongle ${j.adapter_serial}` : `waiting for ${j.host}…`;
+  if (!S.connected){ $('dot').className='dot down'; $('state').textContent='Inverter offline – retrying'; }
+  else if (age == null){ $('dot').className='dot stale'; $('state').textContent='Connected, waiting for first reading'; }
+  else { $('dot').className = 'dot ' + (age < 180 ? 'ok' : 'stale'); $('state').textContent = `Updated ${fmtAge(age)} ago`; }
+
+  if (L.soc != null){
+    const grid = L.p_grid, batt = L.p_battery;  // grid: + export; batt: + discharge
+    $('v-grid').textContent = kw(Math.abs(grid)); $('l-grid').textContent = grid < -30 ? 'Importing' : grid > 30 ? 'Exporting' : 'Grid idle';
+    $('v-home').textContent = kw(L.p_load);
+    $('v-batt').textContent = kw(Math.abs(batt)); $('l-batt').textContent = `${L.soc}% · ` + (batt > 30 ? 'discharging' : batt < -30 ? 'charging' : 'idle');
+    $('v-solar').textContent = kw(L.p_pv); if (L.p_pv > 0) hasSolar = true; showSolar();
+    flow('p-grid', grid < 0 ? 'in' : 'out', grid, '--grid-c');
+    flow('p-home', 'out', L.p_load, '--home');
+    flow('p-batt', batt > 0 ? 'in' : 'out', batt, '--batt');
+    flow('p-solar', 'in', L.p_pv, '--solar');
+    $('ic-fill').setAttribute('d', `M6 10v4h${Math.max(1, 10*L.soc/100).toFixed(1)}v-4z`);
+    $('soc').textContent = L.soc; $('socbar').style.width = L.soc + '%';
+    $('b-state').textContent = batt > 30 ? 'Discharging' : batt < -30 ? 'Charging' : 'Idle';
+    $('b-power').textContent = kw(Math.abs(batt));
+    $('b-vi').textContent = `${L.v_battery.toFixed(1)} V · ${Math.abs(L.i_battery).toFixed(1)} A`;
+    $('b-temp').textContent = `${L.t_battery.toFixed(1)} °C`;
+    $('i-temp').textContent = `${L.t_inverter.toFixed(1)} °C`;
+    $('g-vf').textContent = `${L.v_ac.toFixed(1)} V · ${L.f_ac.toFixed(2)} Hz`;
+    $('i-status').textContent = L.status + (L.fault_code ? ` (fault ${L.fault_code})` : '');
+    $('t-imp').innerHTML = kwh(L.e_import_day); $('t-exp').innerHTML = kwh(L.e_export_day);
+    $('t-chg').innerHTML = kwh(L.e_charge_day); $('t-dis').innerHTML = kwh(L.e_discharge_day);
+    $('t-pv').innerHTML = kwh(L.e_pv_day);
+    $('c-imp').textContent = L.e_import_total != null ? `${Math.round(L.e_import_total).toLocaleString()} kWh` : '–';
+    $('c-exp').textContent = L.e_export_total != null ? `${Math.round(L.e_export_total).toLocaleString()} kWh` : '–';
+  }
+  if (L.e_battery_throughput_total != null) $('c-thru').textContent = `${Math.round(L.e_battery_throughput_total).toLocaleString()} kWh`;
+  if (L.modules?.length){
+    const all = L.modules.flatMap(m => m.cells), temps = L.modules.flatMap(m => m.temps);
+    const mn = Math.min(...all), mx = Math.max(...all), lo = mn - 0.02, hi = mx + 0.005;
+    $('cellsBox').innerHTML = L.modules.map((m, mi) => `<div class="note" style="margin:${mi ? 12 : 0}px 0 0">Module ${mi+1} · ${m.serial} · ${m.voltage.toFixed(1)} V</div>
+      <div class="cells" style="height:56px">` + m.cells.map((v,i) =>
+      `<div title="Module ${mi+1} cell ${i+1}: ${v.toFixed(3)} V" style="height:${(10 + 90*(v-lo)/(hi-lo)).toFixed(0)}%"></div>`).join('') + '</div>').join('') +
+      `<div class="note">${all.length} cells · lowest ${mn.toFixed(3)} V · highest ${mx.toFixed(3)} V</div>`;
+    $('c-spread').textContent = `${Math.round((mx-mn)*1000)} mV`;
+    if (temps.length) $('c-temps').textContent = `${Math.min(...temps).toFixed(1)}–${Math.max(...temps).toFixed(1)} °C`;
+  }
+  const rows = [
+    ['Inverter address', j.host], ['Device type', L.device_type || '–'], ['Inverter clock', L.inverter_clock || '–'],
+    ['Requests / replies', `${S.requests} / ${S.replies}`], ['Reconnects', S.reconnects],
+    ['Last bytes received', S.last_rx ? fmtAge(j.now - S.last_rx) + ' ago' : 'never'],
+  ];
+  if (S.last_error) rows.push(['Last error', S.last_error]);
+  $('conn').innerHTML = rows.map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+}
+function flow(id, dir, w, colorVar){
+  const p = $(id), on = Math.abs(w||0) > 30;
+  p.classList.toggle('on', on);
+  p.classList.toggle('rev', on && dir === 'in');
+  p.style.stroke = on ? css(colorVar) : '';
+}
+// path direction is centre -> node; "in" means energy flows node -> centre
+showSolar(); setInterval(live, 5000); live();
+document.querySelector('details:last-of-type').addEventListener('toggle', async e => {
+  if (e.target.open) $('raw').textContent = JSON.stringify(await (await fetch('api/raw')).json(), null, 1);
+});
+
+// ---------- charts
+Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+Chart.defaults.font.size = 12;
+const charts = {};
+function baseOpts(yTitle, extra = {}){
+  return {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: { legend: { display: false }, tooltip: { backgroundColor: css('--surface'), titleColor: css('--text'), bodyColor: css('--text2'), borderColor: css('--line'), borderWidth: 1, padding: 10, boxPadding: 4, usePointStyle: true } },
+    scales: {
+      x: { grid: { display: false }, ticks: { color: css('--muted'), maxRotation: 0, autoSkipPadding: 18 }, border: { color: css('--line') } },
+      y: { grid: { color: css('--grid') }, ticks: { color: css('--muted') }, border: { display: false }, title: { display: !!yTitle, text: yTitle, color: css('--muted') } },
+    }, ...extra };
+}
+const crosshair = { id: 'crosshair', afterDraw(c){ const a = c.tooltip?._active; if (!a?.length) return;
+  const x = a[0].element.x, {top, bottom} = c.chartArea, ctx = c.ctx; ctx.save(); ctx.strokeStyle = css('--muted'); ctx.lineWidth = 1; ctx.setLineDash([3,3]);
+  ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom); ctx.stroke(); ctx.restore(); } };
+
+function line(label, colorVar, data){ return { label, data, borderColor: css(colorVar), backgroundColor: css(colorVar), _c: colorVar, borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: .25, spanGaps: 600000 }; }
+
+let curDate = new Date();
+async function loadDay(){
+  $('date').value = ymd(curDate);
+  const j = await (await fetch('api/day?date=' + ymd(curDate))).json();
+  const rows = j.rows, t = rows.map(r => r.ts * 1000);
+  const lbl = t.map(ms => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+  const hasPv = rows.some(r => r.p_pv > 0); if (hasPv) { hasSolar = true; showSolar(); }
+  $('lg-solar').hidden = !hasPv;
+  const ds = [
+    line('Home', '--home', rows.map(r => r.p_load)),
+    line('Grid', '--grid-c', rows.map(r => r.p_grid == null ? null : -r.p_grid)),
+    line('Battery', '--batt', rows.map(r => r.p_battery)),
+  ];
+  if (hasPv) ds.push(line('Solar', '--solar', rows.map(r => r.p_pv)));
+  $('powerEmpty').hidden = rows.length > 0;
+  $('powerEmpty').textContent = 'No readings logged for this day yet. GivLocal only has data from when it has been running.';
+  $('powerChart').style.display = rows.length ? '' : 'none';
+  $('socChart').style.display = rows.length ? '' : 'none';
+  const pOpts = baseOpts('W'); pOpts.plugins.tooltip.callbacks = { label: c => ` ${c.dataset.label}: ${kw(c.parsed.y)}` };
+  draw('powerChart', { type: 'line', data: { labels: lbl, datasets: ds }, options: pOpts, plugins: [crosshair] });
+  const sOpts = baseOpts('%'); sOpts.scales.y.min = 0; sOpts.scales.y.max = 100;
+  sOpts.plugins.tooltip.callbacks = { label: c => ` Charge: ${c.parsed.y}%` };
+  const soc = line('Battery charge', '--batt', rows.map(r => r.soc)); soc.fill = 'origin'; soc._fill = true;
+  soc.backgroundColor = css('--batt') + '33';
+  draw('socChart', { type: 'line', data: { labels: lbl, datasets: [soc] }, options: sOpts, plugins: [crosshair] });
+  const isToday = ymd(curDate) === ymd(new Date());
+  if (isToday && j.summary) $('t-home').innerHTML = kwh(j.summary.home);
+}
+function draw(id, cfg){ if (charts[id]) charts[id].destroy(); charts[id] = new Chart($(id), cfg); }
+$('prev').onclick = () => { curDate.setDate(curDate.getDate() - 1); loadDay(); };
+$('next').onclick = () => { curDate.setDate(curDate.getDate() + 1); loadDay(); };
+$('today').onclick = () => { curDate = new Date(); loadDay(); };
+$('date').onchange = e => { const [y,m,d] = e.target.value.split('-'); curDate = new Date(y, m-1, d); loadDay(); };
+
+async function loadDays(){
+  const n = +$('range').value, days = await (await fetch('api/days?n=' + n)).json();
+  const lbl = days.map(d => new Date(d.date + 'T12:00').toLocaleDateString([], { day: 'numeric', month: 'short' }));
+  const bar = (label, v, key) => ({ label, data: days.map(d => d[key]), backgroundColor: css(v), _c: v, borderRadius: 4, borderSkipped: 'bottom', borderColor: css('--surface'), borderWidth: { left: 1, right: 1 }, maxBarThickness: 18 });
+  const o = baseOpts('kWh'); o.interaction = { mode: 'index', intersect: false };
+  o.plugins.tooltip.callbacks = { label: c => ` ${c.dataset.label}: ${c.parsed.y?.toFixed(1) ?? '–'} kWh`,
+    afterBody: it => { const d = days[it[0].dataIndex]; return d.coverage < .95 ? `\nLogged ${Math.round(d.coverage*100)}% of this day` : ''; } };
+  draw('daysChart', { type: 'bar', data: { labels: lbl, datasets: [bar('Home used', '--home', 'home'), bar('Imported', '--grid-c', 'import'), bar('Exported', '--export', 'export')] }, options: o });
+  $('daysTable').innerHTML = '<tr><th>Date</th><th>Home</th><th>Import</th><th>Export</th><th>Charged</th><th>Discharged</th><th>Solar</th><th>Charge range</th><th>Logged</th></tr>' +
+    days.slice().reverse().map(d => `<tr><td>${d.date}</td>${['home','import','export','charge','discharge','pv'].map(k => `<td>${d[k] == null ? '–' : d[k].toFixed(1)}</td>`).join('')}<td>${d.soc_min ?? '–'}–${d.soc_max ?? '–'}%</td><td>${Math.round(d.coverage*100)}%</td></tr>`).join('');
+}
+$('range').onchange = loadDays;
+$('csv').onclick = () => { const to = new Date(), from = new Date(); from.setDate(to.getDate() - +$('range').value + 1); location.href = `api/export.csv?from=${ymd(from)}&to=${ymd(to)}`; };
+
+function restyleCharts(){ loadDay(); loadDays(); }
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', restyleCharts);
+loadDay(); loadDays();
+setInterval(() => { if (ymd(curDate) === ymd(new Date())) loadDay(); }, 60000);
+setInterval(loadDays, 300000);
+</script>
+</body>
+</html>

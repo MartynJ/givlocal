@@ -1,0 +1,2 @@
+GIV_UPLOAD_URL=https://<your-app>/ingest
+GIV_UPLOAD_TOKEN=<token shown in the dashboard>
