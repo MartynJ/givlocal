@@ -26,6 +26,7 @@ Options: `python3 app.py --inverter 192.168.1.50 --port 8080 --db givlocal.db`
 - Today's import, export, battery charged and discharged, and home use
 - Power and charge-level charts for any logged day
 - Daily energy bars (7/30/90/365 days) with a table view and CSV export
+- Inverter settings (read-only): battery mode, reserve, charge target and rate limits, grid-charge window, timed discharge and the inverter clock, with a warning when the charge window doesn't match your cheap-rate hours (`/api/settings?cheap_from=23:30&cheap_to=05:30`)
 
 ## How it works
 

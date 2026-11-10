@@ -19,7 +19,8 @@ log = logging.getLogger("givlocal")
 # (func, base, slave)  func 4 = input registers, 3 = holding registers.
 # Input regs 0-59 carry nearly all live values, so they are asked for most often.
 IR0 = (4, 0, 0x11)
-ROTATION = [IR0, (4, 180, 0x11), IR0, (3, 0, 0x11), IR0, (4, 60, 0x32), IR0, (4, 120, 0x11)]
+ROTATION = [IR0, (4, 180, 0x11), IR0, (3, 0, 0x11), IR0, (4, 60, 0x32), IR0, (4, 120, 0x11),
+            IR0, (3, 60, 0x11), IR0, (3, 240, 0x11)]
 SAMPLE_EVERY = 30  # seconds between stored samples
 
 
@@ -98,6 +99,105 @@ def decode_live(cache):
     return out
 
 
+# ---------------------------------------------------------------------------- settings (read-only)
+def _hhmm(v):
+    """Holding registers store times as HHMM in decimal, e.g. 2330 = 23:30."""
+    if v is None or v % 100 > 59 or v // 100 > 23:
+        return None
+    return f"{v // 100:02d}:{v % 100:02d}"
+
+
+def _hr(cache, reg):
+    block = _latest(cache, 3, reg - reg % 60, (0x11,))
+    return block["values"][reg % 60] if block else None
+
+
+def decode_settings(cache, cheap_window=("23:30", "05:30")):
+    """The inverter's own settings, decoded from its holding registers. Read-only."""
+    hr = lambda r: _hr(cache, r)
+    blocks = [_latest(cache, 3, b, (0x11,)) for b in (0, 60, 240)]
+    if not any(blocks):
+        return None
+    out = {"read_at": max(b["ts"] for b in blocks if b), "items": [], "checks": []}
+
+    def item(group, label, value, detail=None, reg=None):
+        out["items"].append({"group": group, "label": label, "value": value, "detail": detail, "register": reg})
+
+    mode = hr(27)
+    if mode is not None:
+        item("Battery", "Battery mode", "Eco (battery powers the home)" if mode == 1 else "Timed / export",
+             "In Eco mode the battery covers the house instead of the grid whenever it has charge.", "HR27")
+    for reg, label, note in ((110, "Reserve kept back", "The battery stops discharging at this level."),
+                             (116, "Overnight charge target", None)):
+        v = hr(reg)
+        if v is not None:
+            item("Battery", label, f"{v}%", note, f"HR{reg}")
+    for reg, label in ((111, "Charge rate limit"), (112, "Discharge rate limit")):
+        v = hr(reg)
+        if v is not None:
+            item("Battery", label, "Full power" if v >= 50 else f"{v * 2}% of full power", None, f"HR{reg}")
+
+    ac, start, end = hr(96), _hhmm(hr(94)), _hhmm(hr(95))
+    if ac is not None:
+        item("Charging from the grid", "Grid charging", "On" if ac else "Off",
+             "Whether the battery tops up from the grid in the charge window.", "HR96")
+    if start and end:
+        item("Charging from the grid", "Charge window", f"{start}–{end}", None, "HR94–95")
+        if ac:
+            want_start, want_end = cheap_window
+            if start != want_start or end != want_end:
+                out["checks"].append({"level": "warn", "text":
+                    f"The battery charges {start}–{end}, but your cheap rate runs {want_start}–{want_end}."
+                    + (f" Starting at {want_start} would add "
+                       f"{_minutes(want_start, start)} minutes of charging at the night rate." if _minutes(want_start, start) > 0 else "")})
+            else:
+                out["checks"].append({"level": "good", "text": f"The charge window matches your cheap rate ({start}–{end})."})
+
+    dis, dstart, dend = hr(59), _hhmm(hr(56)), _hhmm(hr(57))
+    if dis is not None:
+        item("Discharging", "Timed discharge", "On" if dis else "Off",
+             "Forces the battery to discharge in a set window (for export).", "HR59")
+        if dis and dstart and dend:
+            item("Discharging", "Discharge window", f"{dstart}–{dend}", None, "HR56–57")
+
+    extra = []
+    for i in range(10):
+        a, b, soc = hr(240 + i * 3), hr(241 + i * 3), hr(242 + i * 3)
+        if a and b and a != b and _hhmm(a) and _hhmm(b):
+            extra.append(f"{_hhmm(a)}–{_hhmm(b)} to {soc}%")
+    if extra:
+        item("Charging from the grid", "Extra charge slots", ", ".join(extra), None, "HR240–269")
+
+    clock = [hr(r) for r in range(35, 41)]
+    if None not in clock:
+        try:
+            inv = datetime(2000 + clock[0], *clock[1:6])
+            block = _latest(cache, 3, 0, (0x11,))
+            # Stored copies carry the time they were saved, not read, so only compare clocks on live reads.
+            drift = None if block.get("stored") else (inv - datetime.fromtimestamp(block["ts"])).total_seconds()
+            item("Inverter", "Inverter clock", inv.strftime("%d %b %Y %H:%M:%S"),
+                 "last saved reading" if drift is None else "in step with this computer" if abs(drift) < 120
+                 else f"{'ahead' if drift > 0 else 'behind'} by {fmt_drift(drift)}",
+                 "HR35–40")
+            if drift is not None and abs(drift) >= 120:
+                out["checks"].append({"level": "warn", "text":
+                    f"The inverter clock is {fmt_drift(drift)} {'fast' if drift > 0 else 'slow'}, which shifts the charge window."})
+        except ValueError:
+            pass
+    return out
+
+
+def _minutes(a, b):
+    """Minutes from time a to time b, both HH:MM, wrapping past midnight."""
+    ma, mb = (int(x[:2]) * 60 + int(x[3:]) for x in (a, b))
+    return (mb - ma) % 1440
+
+
+def fmt_drift(sec):
+    sec = abs(sec)
+    return f"{round(sec / 60)} min" if sec < 3600 else f"{sec / 3600:.1f} h"
+
+
 # ---------------------------------------------------------------------------- storage
 SAMPLE_COLS = ["soc", "p_battery", "p_grid", "p_load", "p_pv", "p_inverter", "v_ac", "f_ac",
                "v_battery", "t_battery", "t_inverter", "e_import_day", "e_export_day",
@@ -122,6 +222,20 @@ class Store:
             c.execute(f"INSERT OR REPLACE INTO samples (ts, {', '.join(SAMPLE_COLS)}, raw) "
                       f"VALUES (?, {','.join('?' * len(SAMPLE_COLS))}, ?)",
                       [int(ts)] + [live.get(k) for k in SAMPLE_COLS] + [json.dumps(raw)])
+
+    def latest_blocks(self, func=3, bases=(0, 60, 120, 180, 240, 300, 360), slave=0x11):
+        """Most recent stored copy of each register block, so settings show at once after a restart."""
+        out = {}
+        with self.conn() as c:
+            for base in bases:
+                key = f"{func}:{base}:{slave}"
+                row = c.execute("SELECT ts, raw FROM samples WHERE raw LIKE ? ORDER BY ts DESC LIMIT 1",
+                                (f'%"{key}"%',)).fetchone()
+                if row:
+                    block = json.loads(row[1])[key]
+                    out[(func, base, slave)] = {"ts": row[0], "values": block["values"], "slave": slave,
+                                                "serial": block.get("serial") or "", "stored": True}
+        return out
 
     def pending_uploads(self, limit=200):
         with self.conn() as c:
@@ -357,6 +471,10 @@ def make_handler(poller, store):
                 return self.send({"now": time.time(), "live": decode_live(cache), "stats": stats,
                                   "inverter_serial": poller.inverter, "adapter_serial": poller.adapter,
                                   "host": poller.host})
+            if u.path == "/api/settings":
+                cache, _ = poller.snapshot()
+                window = (q.get("cheap_from", "23:30"), q.get("cheap_to", "05:30"))
+                return self.send({"settings": decode_settings(cache, window)})
             if u.path == "/api/day":
                 d = datetime.strptime(q.get("date") or datetime.now().strftime("%Y-%m-%d"), "%Y-%m-%d")
                 rows = store.range(d.timestamp(), (d + timedelta(days=1)).timestamp())
@@ -396,6 +514,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     store = Store(a.db)
     poller = Poller(a.inverter, a.inverter_port, store)
+    poller.cache.update(store.latest_blocks())
     poller.start()
     if a.upload_url:
         if not a.upload_token:
