@@ -6,12 +6,12 @@ serves a dashboard at http://localhost:8080. Standard library only (Python 3.8+)
 
     python3 app.py --inverter 192.168.1.50
 """
-import argparse, csv, io, json, logging, os, socket, sqlite3, threading, time, urllib.request, urllib.error
+import argparse, csv, io, json, logging, os, queue, re, socket, sqlite3, threading, time, urllib.request, urllib.error
 from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
-from givproto import build_read, split_frames, decode_frame
+from givproto import build_read, build_write, split_frames, decode_frame
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 log = logging.getLogger("givlocal")
@@ -22,6 +22,9 @@ IR0 = (4, 0, 0x11)
 ROTATION = [IR0, (4, 180, 0x11), IR0, (3, 0, 0x11), IR0, (4, 60, 0x32), IR0, (4, 120, 0x11),
             IR0, (3, 60, 0x11), IR0, (3, 240, 0x11)]
 SAMPLE_EVERY = 30  # seconds between stored samples
+
+# The only holding registers GivLocal will ever write: grid-charge window start and end (HHMM).
+WRITABLE = {94: "Charge window start", 95: "Charge window end"}
 
 
 def s16(v):
@@ -211,6 +214,8 @@ class Store:
         with self.conn() as c:
             c.execute(f"""CREATE TABLE IF NOT EXISTS samples(
                 ts INTEGER PRIMARY KEY, {', '.join(k + ' REAL' for k in SAMPLE_COLS)}, raw TEXT)""")
+            c.execute("""CREATE TABLE IF NOT EXISTS changes(
+                ts INTEGER, setting TEXT, old TEXT, new TEXT, result TEXT, origin TEXT)""")
             if "uploaded" not in [r[1] for r in c.execute("PRAGMA table_info(samples)")]:
                 c.execute("ALTER TABLE samples ADD COLUMN uploaded INTEGER NOT NULL DEFAULT 0")
 
@@ -236,6 +241,15 @@ class Store:
                     out[(func, base, slave)] = {"ts": row[0], "values": block["values"], "slave": slave,
                                                 "serial": block.get("serial") or "", "stored": True}
         return out
+
+    def log_change(self, setting, old, new, result, origin):
+        with self.lock, self.conn() as c:
+            c.execute("INSERT INTO changes VALUES (?,?,?,?,?,?)", (int(time.time()), setting, old, new, result, origin))
+
+    def changes(self, n=20):
+        with self.conn() as c:
+            cur = c.execute("SELECT ts, setting, old, new, result, origin FROM changes ORDER BY ts DESC LIMIT ?", (n,))
+            return [dict(zip(["ts", "setting", "old", "new", "result", "origin"], r)) for r in cur]
 
     def pending_uploads(self, limit=200):
         with self.conn() as c:
@@ -295,6 +309,65 @@ class Poller(threading.Thread):
                       "requests": 0, "reconnects": 0, "last_error": None, "since": time.time()}
         self.lock = threading.Lock()
         self.last_sample = 0
+        self.writes = queue.Queue()
+        self.pending_write = None
+        self.priority_reads = [(3, 60, 0x11)]  # charge window, read early
+
+    def write(self, register, value, timeout=150):
+        """Write one holding register and wait until the inverter echoes it back.
+        Returns "ok", or a short reason it failed. Only WRITABLE registers are allowed."""
+        if register not in WRITABLE:
+            raise ValueError(f"register {register} is not on the allowed list")
+        job = {"register": register, "value": value, "done": threading.Event(), "result": None,
+               "sent": 0, "tries": 0}
+        self.writes.put(job)
+        if not job["done"].wait(timeout):
+            job["result"] = job["result"] or "no reply from the inverter"
+            job["abandoned"] = True
+        return job["result"]
+
+    def _send_writes(self, sock, now):
+        job = self.pending_write
+        if job and job.get("abandoned"):
+            self.pending_write = job = None
+        if job is None:
+            if self.writes.empty() or not self.adapter:
+                return
+            job = self.pending_write = self.writes.get()
+        if job["tries"] >= 4:
+            job["result"] = "no reply from the inverter after 4 tries"
+            job["done"].set()
+            self.pending_write = None
+            return
+        if now - job["sent"] > 30:
+            sock.sendall(build_write(job["register"], job["value"], 0x11, self.adapter))
+            job["sent"], job["tries"] = now, job["tries"] + 1
+            log.info("write HR%s = %s (try %s)", job["register"], job["value"], job["tries"])
+
+    def _write_reply(self, m):
+        job = self.pending_write
+        if not job or m.get("func") != 6:
+            return
+        if m["kind"] == "error":
+            job["result"] = f"the inverter refused the change (error {m.get('code')})"
+        elif m["register"] != job["register"]:
+            return
+        elif m["value"] != job["value"]:
+            job["result"] = f"the inverter kept {m['value']} instead of {job['value']}"
+        else:
+            job["result"] = "ok"
+            base = job["register"] - job["register"] % 60
+            with self.lock:
+                block = self.cache.get((3, base, 0x11))
+                if block:
+                    block["values"] = list(block["values"])
+                    block["values"][job["register"] % 60] = job["value"]
+                    block["ts"] = time.time()  # so the change is saved with the next sample
+                    block.pop("stored", None)
+            self.priority_reads.append((3, base, 0x11))
+        log.info("write HR%s: %s", job["register"], job["result"])
+        job["done"].set()
+        self.pending_write = None
 
     def snapshot(self):
         with self.lock:
@@ -322,9 +395,13 @@ class Poller(threading.Thread):
                 now = time.time()
                 # Pace requests: one in flight at a time, give up waiting after 20s.
                 outstanding = {k: t for k, t in outstanding.items() if now - t < 20}
+                self._send_writes(sock, now)
                 if not outstanding and now - last_tx > 10:
-                    func, base, slave = ROTATION[idx % len(ROTATION)]
-                    idx += 1
+                    if self.priority_reads:
+                        func, base, slave = self.priority_reads.pop(0)
+                    else:
+                        func, base, slave = ROTATION[idx % len(ROTATION)]
+                        idx += 1
                     sock.sendall(build_read(func, base, 60, slave, self.adapter))
                     outstanding[(func, base)] = now
                     log.debug("tx func=%s base=%s slave=0x%02x", func, base, slave)
@@ -348,7 +425,9 @@ class Poller(threading.Thread):
                     log.debug("rx %s", {k: v for k, v in (m or {"raw": fr[:24].hex()}).items() if k != "values"})
                     if not m:
                         continue
-                    if m["kind"] == "heartbeat":
+                    if m["kind"] in ("write", "error"):
+                        self._write_reply(m)
+                    elif m["kind"] == "heartbeat":
                         self.adapter = m["adapter"]
                         sock.sendall(fr)  # echo keeps the dongle happy
                     elif m["kind"] == "read" and len(m["values"]) >= 60:
@@ -475,6 +554,8 @@ def make_handler(poller, store):
                 cache, _ = poller.snapshot()
                 window = (q.get("cheap_from", "23:30"), q.get("cheap_to", "05:30"))
                 return self.send({"settings": decode_settings(cache, window)})
+            if u.path == "/api/settings/changes":
+                return self.send(store.changes())
             if u.path == "/api/day":
                 d = datetime.strptime(q.get("date") or datetime.now().strftime("%Y-%m-%d"), "%Y-%m-%d")
                 rows = store.range(d.timestamp(), (d + timedelta(days=1)).timestamp())
@@ -497,7 +578,66 @@ def make_handler(poller, store):
                 return self.send(s.getvalue(), "text/csv",
                                  extra={"Content-Disposition": 'attachment; filename="givlocal.csv"'})
             self.send({"error": "not found"}, code=404)
+
+        def do_POST(self):
+            u = urlparse(self.path)
+            # Only this dashboard's own pages may change settings: block other websites (CSRF).
+            origin = self.headers.get("Origin")
+            if origin and urlparse(origin).netloc != self.headers.get("Host"):
+                return self.send({"error": "changes must come from the GivLocal page itself"}, code=403)
+            if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+                return self.send({"error": "expected JSON"}, code=415)
+            try:
+                body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 4096)) or b"{}")
+            except ValueError:
+                return self.send({"error": "expected JSON"}, code=400)
+            if u.path == "/api/settings/charge-window":
+                return self.send(*change_charge_window(poller, store, body, self.client_address[0]))
+            self.send({"error": "not found"}, code=404)
     return H
+
+
+HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
+
+def change_charge_window(poller, store, body, origin):
+    """Set the grid-charge window. Writes only the registers that differ, one at a time,
+    and records each attempt. Returns (response, http_status)."""
+    want = {}
+    for reg, key in ((94, "start"), (95, "end")):
+        m = HHMM.match(str(body.get(key, "")))
+        if not m:
+            return {"error": f"{key} must be a time like 23:30"}, 400
+        want[reg] = int(m[1]) * 100 + int(m[2])
+    if want[94] == want[95]:
+        return {"error": "start and end can't be the same time"}, 400
+    with CHANGE_LOCK:
+        return _change_charge_window(poller, store, want, origin)
+
+
+CHANGE_LOCK = threading.Lock()
+
+
+def _change_charge_window(poller, store, want, origin):
+    cache, stats = poller.snapshot()
+    if not stats.get("connected"):
+        return {"error": "not connected to the inverter right now"}, 503
+    if any(_hr(cache, reg) is None for reg in want):
+        poller.priority_reads.append((3, 60, 0x11))
+        return {"error": "GivLocal hasn't read the current charge window from the inverter yet. "
+                         "It has asked for it; try again in a minute or two."}, 503
+    results = []
+    for reg, value in want.items():
+        old = _hr(cache, reg)
+        if old == value:
+            results.append({"setting": WRITABLE[reg], "value": _hhmm(value), "result": "unchanged"})
+            continue
+        result = poller.write(reg, value)
+        store.log_change(WRITABLE[reg], _hhmm(old) if old is not None else None, _hhmm(value), result, origin)
+        results.append({"setting": WRITABLE[reg], "value": _hhmm(value), "result": result})
+        if result != "ok":
+            return {"error": f"{WRITABLE[reg]}: {result}", "results": results}, 502
+    return {"ok": True, "results": results}, 200
 
 
 def main():

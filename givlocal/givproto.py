@@ -28,6 +28,14 @@ def build_read(func: int, base: int, count: int, slave: int, adapter_serial: str
     return HEADER.pack(0x5959, 1, len(body) + 2, 1, 2) + body
 
 
+def build_write(register: int, value: int, slave: int, adapter_serial: str) -> bytes:
+    """Write one holding register (Modbus function 6). The inverter echoes register and value back."""
+    serial = (adapter_serial or "AB1234G567")[-10:].rjust(10, "*").encode()
+    body = serial + struct.pack(">QBBHH", 8, slave, 6, register, value)
+    body += struct.pack(">H", crc16_modbus(struct.pack(">BHH", 6, register, value)))
+    return HEADER.pack(0x5959, 1, len(body) + 2, 1, 2) + body
+
+
 def split_frames(buf: bytes):
     """Split a byte stream into complete frames. Returns (frames, leftover)."""
     frames = []
@@ -54,12 +62,21 @@ def decode_frame(frame: bytes):
     fid = frame[7]
     if fid == 1:
         return {"kind": "heartbeat", "adapter": frame[8:18].decode(errors="replace")}
-    if fid != 2 or len(frame) < 8 + 34:
+    if fid != 2 or len(frame) < 8 + 20:
         return None
     p = frame[8:]
     adapter = p[0:10].decode(errors="replace")
     slave, func = p[18], p[19]
-    if func & 0x80 or func not in (3, 4):
+    if func & 0x80:
+        return {"kind": "error", "func": func & 0x7F, "slave": slave, "adapter": adapter,
+                "code": p[-3] if len(p) > 20 else None}
+    if len(p) < 34:
+        return None
+    if func == 6:
+        register, value = struct.unpack(">HH", p[30:34])
+        return {"kind": "write", "func": 6, "slave": slave, "register": register, "value": value,
+                "adapter": adapter, "inverter": p[20:30].decode(errors="replace")}
+    if func not in (3, 4):
         return {"kind": "other", "func": func, "slave": slave, "adapter": adapter}
     inverter = p[20:30].decode(errors="replace")
     base, count = struct.unpack(">HH", p[30:34])

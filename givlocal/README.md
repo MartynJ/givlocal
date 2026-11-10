@@ -6,7 +6,7 @@ and serves a dashboard in your browser.
 
 - No GivEnergy account or internet connection needed
 - Python 3.8+ standard library only (nothing to install)
-- Read-only: it never writes settings to the inverter
+- Changes one thing only: the grid-charge window (registers 94–95). Everything else is read-only
 
 ## Run
 
@@ -26,7 +26,7 @@ Options: `python3 app.py --inverter 192.168.1.50 --port 8080 --db givlocal.db`
 - Today's import, export, battery charged and discharged, and home use
 - Power and charge-level charts for any logged day
 - Daily energy bars (7/30/90/365 days) with a table view and CSV export
-- Inverter settings (read-only): battery mode, reserve, charge target and rate limits, grid-charge window, timed discharge and the inverter clock, with a warning when the charge window doesn't match your cheap-rate hours (`/api/settings?cheap_from=23:30&cheap_to=05:30`)
+- Inverter settings: battery mode, reserve, charge target and rate limits, grid-charge window, timed discharge and the inverter clock, with a warning when the charge window doesn't match your cheap-rate hours (`/api/settings?cheap_from=23:30&cheap_to=05:30`)
 
 ## How it works
 
@@ -47,3 +47,20 @@ re-decoded later if a mapping turns out to be wrong.
 
 Tip: give the inverter's Wi-Fi dongle a fixed IP in your router (a DHCP
 reservation for its MAC address) so the address doesn't change.
+
+## Changing the charge window
+
+The Inverter settings panel can set the grid-charge window, for example to
+23:30–05:30 for Intelligent Octopus Go. GivLocal only ever writes the two
+registers listed in `WRITABLE` in `app.py`. A change is refused until the
+current value has been read, is skipped if nothing would change, and counts as
+done only when the inverter echoes the new value back. Every attempt is logged
+in the `changes` table and shown under "Recent changes".
+
+The dashboard has no sign-in, so anyone on your home network can use it.
+Requests from other websites are blocked. Don't expose port 8080 to the internet.
+
+To try it without touching a real inverter:
+
+    python3 tests/fake_dongle.py 18899 &
+    python3 app.py --inverter 127.0.0.1 --inverter-port 18899 --port 8099 --db /tmp/test.db

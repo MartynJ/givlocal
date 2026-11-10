@@ -105,7 +105,16 @@ th{color:var(--text2);font-weight:600}
 .checks{display:grid;gap:8px;margin-bottom:16px}
 .check{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px}
 .check svg{flex:none;width:18px;height:18px;margin-top:1px}
-.check.warn svg{color:var(--warn)} .check.good svg{color:var(--good)}
+.check.warn svg{color:var(--warn)} .check.good svg{color:var(--good)} .check.bad svg{color:var(--bad)}
+.check button{margin-left:auto;flex:none}
+.cwform{display:flex;flex-wrap:wrap;gap:8px;align-items:center;border-top:1px solid var(--line);margin-top:16px;padding-top:14px;font-size:14px}
+.cwform label{display:inline-flex;gap:6px;align-items:center;color:var(--text2)}
+.cwform input[type=time]{font:inherit;font-size:13px;color:var(--text);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:5px 8px}
+button.primary{background:var(--text);color:var(--surface);border-color:var(--text)}
+button:disabled{opacity:.5;cursor:default}
+#cwStatus{flex-basis:100%;font-size:13px;color:var(--text2)}
+#cwStatus.bad{color:var(--bad)} #cwStatus.good{color:var(--good)}
+.changes{font-size:13px;color:var(--text2);margin:8px 0 0;padding-left:18px}
 </style>
 </head>
 <body>
@@ -226,7 +235,16 @@ th{color:var(--text2);font-weight:600}
       <div class="toolbar"><h2>Inverter settings</h2><span class="note" id="set-age" style="margin:0"></span></div>
       <div class="checks" id="setChecks"></div>
       <div class="setgroups" id="setGroups"><div class="empty" style="height:80px">Waiting for the inverter to report its settings…</div></div>
-      <p class="note">Read-only: GivLocal shows these settings but does not change them. Register numbers are shown on hover.</p>
+      <form class="cwform" id="cwForm" hidden>
+        <strong style="margin-right:4px">Change charge window</strong>
+        <label>From <input type="time" id="cwStart" required></label>
+        <label>to <input type="time" id="cwEnd" required></label>
+        <button type="button" id="cwCheap">Use cheap-rate hours</button>
+        <button type="submit" class="primary" id="cwSave">Save to inverter</button>
+        <div id="cwStatus" role="status" aria-live="polite"></div>
+      </form>
+      <details id="cwLogBox" hidden><summary>Recent changes</summary><ul class="changes" id="cwLog"></ul></details>
+      <p class="note">GivLocal can change only the grid-charge window; every other setting is shown read-only. Each change is sent to the inverter, confirmed by its reply, and logged. Register numbers are shown on hover.</p>
     </section>
 
     <section class="card c12">
@@ -419,6 +437,7 @@ async function loadSettings(){
     if (!st) return;
     $('set-age').textContent = `read ${fmtAge(Date.now()/1000 - st.read_at)} ago`;
     $('setChecks').innerHTML = st.checks.map(c => `<div class="check ${c.level}">${ICON[c.level] || ''}<span>${esc(c.text)}</span></div>`).join('');
+    fillWindow(st);
     const groups = {};
     st.items.forEach(i => (groups[i.group] ||= []).push(i));
     $('setGroups').innerHTML = Object.entries(groups).map(([g, items]) => `<div><h3>${esc(g)}</h3><dl class="kv">` +
@@ -426,7 +445,46 @@ async function loadSettings(){
         (i.detail && i.label === 'Inverter clock' ? `<small>${esc(i.detail)}</small>` : '') + '</dd>').join('') + '</dl></div>').join('');
   } catch (e) { /* collector restarting; try again next time */ }
 }
-loadSettings(); setInterval(loadSettings, 60000);
+const CHEAP = { start: '23:30', end: '05:30' };
+let cwBusy = false;
+function fillWindow(st){
+  const w = st.items.find(i => i.label === 'Charge window');
+  if (!w || cwBusy) return;
+  $('cwForm').hidden = false;
+  const [a, b] = w.value.split('–');
+  if (!$('cwStart').dataset.touched) { $('cwStart').value = a; $('cwEnd').value = b; }
+}
+async function loadChanges(){
+  try {
+    const rows = await (await fetch('api/settings/changes')).json();
+    $('cwLogBox').hidden = !rows.length;
+    $('cwLog').innerHTML = rows.map(r => `<li>${new Date(r.ts*1000).toLocaleString([], {dateStyle:'medium', timeStyle:'short'})}: ` +
+      `${esc(r.setting)} ${esc(r.old || '?')} → ${esc(r.new)}, ${r.result === 'ok' ? 'confirmed' : esc(r.result)}</li>`).join('');
+  } catch (e) {}
+}
+['cwStart','cwEnd'].forEach(id => $(id).addEventListener('input', () => $('cwStart').dataset.touched = 1));
+$('cwCheap').onclick = () => { $('cwStart').value = CHEAP.start; $('cwEnd').value = CHEAP.end; $('cwStart').dataset.touched = 1; };
+$('cwForm').onsubmit = async ev => {
+  ev.preventDefault();
+  const start = $('cwStart').value, end = $('cwEnd').value, st = $('cwStatus');
+  if (!confirm(`Set the battery to charge from the grid ${start}–${end}?`)) return;
+  cwBusy = true; $('cwSave').disabled = $('cwCheap').disabled = true;
+  st.className = ''; st.textContent = 'Sending to the inverter… its dongle can take a minute or two to reply.';
+  try {
+    const r = await fetch('api/settings/charge-window', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                          body: JSON.stringify({ start, end }) });
+    const j = await r.json();
+    if (j.ok) {
+      st.className = 'good';
+      st.textContent = j.results.every(x => x.result === 'unchanged') ? `Already set to ${start}–${end}; nothing sent.`
+                                                                       : `Done. The inverter confirmed ${start}–${end}.`;
+      delete $('cwStart').dataset.touched;
+    } else { st.className = 'bad'; st.textContent = `Not changed: ${j.error}`; }
+  } catch (e) { st.className = 'bad'; st.textContent = 'Lost contact with GivLocal; check the window again in a minute.'; }
+  cwBusy = false; $('cwSave').disabled = $('cwCheap').disabled = false;
+  loadSettings(); loadChanges();
+};
+loadSettings(); loadChanges(); setInterval(loadSettings, 60000);
 </script>
 </body>
 </html>
