@@ -110,6 +110,11 @@ th{color:var(--text2);font-weight:600}
 .seg button{border:0;border-radius:0;border-right:1px solid var(--line);padding:6px 12px}
 .seg button:last-child{border-right:0}
 .seg button[aria-pressed=true]{background:var(--text);color:var(--surface)}
+.pernav{display:flex;align-items:center;gap:8px;margin:2px 0 12px;font-size:14px}
+.pernav strong{min-width:12ch;text-align:center}
+.pernav button{padding:4px 10px}
+.tile.sel{border-color:var(--text2)}
+#se-cycle select{padding:3px 6px}
 .btn-primary{background:var(--text);color:var(--surface);border-color:var(--text)}
 .btn-primary:disabled{opacity:.5;cursor:default}
 </style>
@@ -230,6 +235,33 @@ th{color:var(--text2);font-weight:600}
         <dt>Lifetime import</dt><dd id="c-imp">–</dd>
         <dt>Lifetime export</dt><dd id="c-exp">–</dd>
       </dl>
+    </section>
+
+    <section class="card c12" id="spend">
+      <div class="toolbar">
+        <h2>Spent and earned</h2>
+        <div class="seg" role="group" aria-label="Group by">
+          <button data-per="day" aria-pressed="false">Day</button><button data-per="week" aria-pressed="false">Week</button><button data-per="month" aria-pressed="false">Month</button><button data-per="year" aria-pressed="false">Year</button><button data-per="bill" aria-pressed="true">Billing period</button>
+        </div>
+      </div>
+      <div class="pernav">
+        <button id="se-prev" aria-label="Previous period">‹</button>
+        <strong id="se-label">–</strong>
+        <button id="se-next" aria-label="Next period">›</button>
+        <span class="note" id="se-days" style="margin:0"></span>
+        <label class="note" id="se-cycle" style="margin:0 0 0 auto">Bill starts on day
+          <select id="se-start" aria-label="Day of the month your bill starts"></select></label>
+      </div>
+      <div class="tiles" style="--n:4">
+        <div class="tile"><div class="l"><i style="background:var(--grid-c)"></i>Spent</div><div class="v" id="se-spent">–</div><div class="note" id="se-spent-sub" style="margin-top:2px"></div></div>
+        <div class="tile"><div class="l"><i style="background:var(--export)"></i>Earned</div><div class="v" id="se-earned">–</div><div class="note" id="se-earned-sub" style="margin-top:2px"></div></div>
+        <div class="tile"><div class="l"><i style="background:var(--text)"></i>Net bill</div><div class="v" id="se-net">–</div><div class="note" id="se-net-sub" style="margin-top:2px"></div></div>
+        <div class="tile"><div class="l">Average per day</div><div class="v" id="se-avg">–</div><div class="note" id="se-avg-sub" style="margin-top:2px"></div></div>
+      </div>
+      <div class="legend" style="margin-top:14px"><span><i class="sq" style="background:var(--grid-c)"></i>Spent (energy + standing charge)</span><span><i class="sq" style="background:var(--export)"></i>Earned from export</span><span><i class="sq" style="background:var(--text);border-radius:50%"></i>Net bill</span></div>
+      <div class="chart" style="height:260px"><canvas id="seChart"></canvas><div class="empty" id="se-empty" hidden>Costs appear once Octopus has published a day's meter readings, usually the following day.</div></div>
+      <p class="note">From your Octopus meter readings, priced half hour by half hour on your tariff, including VAT. Spent = electricity imported plus the daily standing charge; earned = electricity exported. Octopus publishes each day's readings the next day, so the latest day or two are still to come. Click a bar to see that period.</p>
+      <details><summary>Show as table</summary><div class="tablewrap"><table id="seTable"></table></div></details>
     </section>
 
     <section class="card c12" id="savings">
@@ -654,7 +686,117 @@ document.querySelectorAll('#savings [data-per]').forEach(b => b.onclick = () => 
 });
 loadSavings(); setInterval(loadSavings, 600000);
 
-function restyleCharts(){ loadDay(); loadDays(); if (!$('oct-linked').hidden) loadOctopusDays(); drawSavings(); }
+// ---------- spent and earned (from costed Octopus days)
+let sePer = 'bill', seDays = [], seSel = null;
+let billStart = 15;
+try { billStart = Math.min(28, Math.max(1, +localStorage.getItem('billStart') || 15)); } catch(e){}
+try { sePer = localStorage.getItem('sePer') || 'bill'; } catch(e){}
+$('se-start').innerHTML = Array.from({length: 28}, (_, i) => `<option${i + 1 === billStart ? ' selected' : ''}>${i + 1}</option>`).join('');
+const addMonths = (y, m, n) => { const d = new Date(y, m - 1 + n, 1); return [d.getFullYear(), d.getMonth() + 1]; };
+const pad2 = n => String(n).padStart(2, '0');
+function billKey(date){
+  let [y, m, d] = date.split('-').map(Number);
+  if (d < billStart) [y, m] = addMonths(y, m, -1);
+  return `${y}-${pad2(m)}-${pad2(billStart)}`;
+}
+const seKey = {day: d => d, week: mondayOf, month: d => d.slice(0, 7), year: d => d.slice(0, 4), bill: billKey};
+const fmtD = (k, o) => new Date(k + 'T12:00').toLocaleDateString([], o);
+function periodRange(per, key){          // [first day, last day] as YYYY-MM-DD
+  const plus = (k, n) => { const d = new Date(k + 'T12:00'); d.setDate(d.getDate() + n); return ymd(d); };
+  if (per === 'day') return [key, key];
+  if (per === 'week') return [key, plus(key, 6)];
+  if (per === 'month') { const [y, m] = key.split('-').map(Number); return [`${key}-01`, ymd(new Date(y, m, 0, 12))]; }
+  if (per === 'year') return [`${key}-01-01`, `${key}-12-31`];
+  const [y, m] = key.split('-').map(Number), [ny, nm] = addMonths(y, m, 1);
+  return [key, plus(`${ny}-${pad2(nm)}-${pad2(billStart)}`, -1)];
+}
+const daysBetween = (a, b) => Math.round((new Date(b + 'T12:00') - new Date(a + 'T12:00')) / 86400000) + 1;
+const seLabel = (per, key) => {
+  if (per === 'day') return fmtD(key, {weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'});
+  if (per === 'month') return new Date(key + '-01T12:00').toLocaleDateString([], {month: 'long', year: 'numeric'});
+  if (per === 'year') return key;
+  const [a, b] = periodRange(per, key);
+  return `${fmtD(a, {day: 'numeric', month: 'short'})} – ${fmtD(b, {day: 'numeric', month: 'short', year: 'numeric'})}`;
+};
+const seShort = (per, key) => per === 'day' ? fmtD(key, {day: 'numeric', month: 'short'}) : per === 'week' ? fmtD(key, {day: 'numeric', month: 'short'})
+  : per === 'month' ? new Date(key + '-01T12:00').toLocaleDateString([], {month: 'short', year: '2-digit'}) : per === 'year' ? key
+  : fmtD(key, {day: 'numeric', month: 'short', year: '2-digit'});
+const seBars = {day: 31, week: 13, month: 13, year: 10, bill: 13};
+function seGroups(){
+  const groups = new Map();
+  for (const d of seDays) {
+    const k = seKey[sePer](d.date);
+    const g = groups.get(k) ?? {key: k, energy: 0, standing: 0, earned: 0, impKwh: 0, expKwh: 0, days: 0, partial: 0};
+    g.energy += d.importCost ?? 0; g.standing += d.standingCharge ?? 0; g.earned += d.exportEarnings ?? 0;
+    g.impKwh += d.importKwh ?? 0; g.expKwh += d.exportKwh ?? 0; g.days++;
+    if (d.note && /half-hourly readings|no published rate/.test(d.note)) g.partial++;
+    groups.set(k, g);
+  }
+  return [...groups.values()].sort((a, b) => a.key.localeCompare(b.key)).map(g => {
+    const [a, b] = periodRange(sePer, g.key);
+    return {...g, spent: g.energy + g.standing, net: g.energy + g.standing - g.earned, span: daysBetween(a, b)};
+  });
+}
+function drawSpend(){
+  const all = seGroups(), groups = all.slice(-seBars[sePer]);
+  $('se-cycle').hidden = sePer !== 'bill';
+  $('se-empty').hidden = all.length > 0; $('seChart').hidden = !all.length;
+  if (!all.length) return;
+  if (seSel == null || !all.some(g => g.key === seSel)) seSel = all.at(-1).key;
+  const i = all.findIndex(g => g.key === seSel), g = all[i];
+  $('se-prev').disabled = i <= 0; $('se-next').disabled = i >= all.length - 1;
+  $('se-label').textContent = seLabel(sePer, g.key);
+  const [, last] = periodRange(sePer, g.key), today = ymd(new Date());
+  $('se-days').textContent = sePer === 'day' ? '' : g.days < g.span
+    ? `${g.days} of ${g.span} days${last >= today ? ' so far' : ' with meter readings'}` : `all ${g.span} days`;
+  $('se-spent').textContent = money(g.spent);
+  $('se-spent-sub').textContent = `${money(g.energy)} for ${g.impKwh.toFixed(1)} kWh + ${money(g.standing)} standing charge`;
+  $('se-earned').textContent = money(g.earned);
+  $('se-earned-sub').textContent = `${g.expKwh.toFixed(1)} kWh exported`;
+  $('se-net').textContent = g.net < 0 ? `${money(-g.net)} credit` : money(g.net);
+  $('se-net-sub').textContent = g.spent > 0 ? `export covered ${Math.round(g.earned / g.spent * 100)}% of spending` : '';
+  $('se-avg').textContent = money(g.net / g.days);
+  $('se-avg-sub').textContent = sePer === 'day' ? 'net, for this day' : `net, over ${g.days} day${g.days > 1 ? 's' : ''}` + (g.days < g.span && last >= today ? ` · on course for ${money(g.net / g.days * g.span)}` : '');
+  const o = baseOpts('£');
+  o.scales.x.stacked = true; o.scales.y.stacked = false;
+  o.scales.y.ticks.callback = v => (v < 0 ? '−£' : '£') + Math.abs(v);
+  o.onClick = (ev, els) => { if (els.length) { seSel = groups[els[0].index].key; drawSpend(); } };
+  o.onHover = (ev, els) => { ev.native.target.style.cursor = els.length ? 'pointer' : 'default'; };
+  o.plugins.tooltip.callbacks = {
+    title: it => seLabel(sePer, groups[it[0].dataIndex].key),
+    label: c => { const x = groups[c.dataIndex];
+      return c.datasetIndex === 0 ? ` Spent: ${money(x.spent)} (${money(x.energy)} energy + ${money(x.standing)} standing)`
+           : c.datasetIndex === 1 ? ` Earned: ${money(x.earned)} (${x.expKwh.toFixed(1)} kWh)` : ` Net bill: ${money(x.net)}`; },
+    afterBody: it => { const x = groups[it[0].dataIndex]; return sePer !== 'day' && x.days < x.span ? `\n${x.days} of ${x.span} days with readings` : ''; } };
+  const selAlpha = (color, k) => k === seSel ? color : color + '80';
+  draw('seChart', { type: 'bar', data: { labels: groups.map(x => seShort(sePer, x.key)), datasets: [
+    { label: 'Spent', data: groups.map(x => x.spent), backgroundColor: groups.map(x => selAlpha(css('--grid-c'), x.key)), borderRadius: 4, borderSkipped: 'bottom', maxBarThickness: sePer === 'day' ? 18 : 44, grouped: false },
+    { label: 'Earned', data: groups.map(x => -x.earned), backgroundColor: groups.map(x => selAlpha(css('--export'), x.key)), borderRadius: 4, borderSkipped: 'top', maxBarThickness: sePer === 'day' ? 18 : 44, grouped: false },
+    { type: 'line', label: 'Net bill', data: groups.map(x => x.net), showLine: false, pointRadius: 4, pointHoverRadius: 6,
+      pointBackgroundColor: css('--text'), pointBorderColor: css('--surface'), pointBorderWidth: 2 },
+  ] }, options: o });
+  const head = {day: 'Day', week: 'Week starting', month: 'Month', year: 'Year', bill: 'Billing period'}[sePer];
+  $('seTable').innerHTML = `<tr><th>${head}</th><th>Days</th><th>Imported</th><th>Energy</th><th>Standing</th><th>Spent</th><th>Exported</th><th>Earned</th><th>Net bill</th></tr>` +
+    all.slice().reverse().map(x => `<tr><td>${seLabel(sePer, x.key)}</td><td>${x.days}${x.days < x.span ? ' of ' + x.span : ''}</td><td>${x.impKwh.toFixed(1)} kWh</td><td>${money(x.energy)}</td><td>${money(x.standing)}</td><td>${money(x.spent)}</td><td>${x.expKwh.toFixed(1)} kWh</td><td>${money(x.earned)}</td><td>${money(x.net)}</td></tr>`).join('');
+}
+async function loadSpend(){
+  try { seDays = (await (await api('api/octopus/days?n=800')).json()).filter(d => d.state === 'costed' && d.netCost != null); }
+  catch(e){ return; }
+  drawSpend();
+}
+function setPer(per){
+  sePer = per; seSel = null;
+  try { localStorage.setItem('sePer', per); } catch(e){}
+  document.querySelectorAll('#spend [data-per]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.per === per)));
+  drawSpend();
+}
+document.querySelectorAll('#spend [data-per]').forEach(b => b.onclick = () => setPer(b.dataset.per));
+$('se-prev').onclick = () => { const all = seGroups(), i = all.findIndex(g => g.key === seSel); if (i > 0) { seSel = all[i - 1].key; drawSpend(); } };
+$('se-next').onclick = () => { const all = seGroups(), i = all.findIndex(g => g.key === seSel); if (i < all.length - 1) { seSel = all[i + 1].key; drawSpend(); } };
+$('se-start').onchange = () => { billStart = +$('se-start').value; try { localStorage.setItem('billStart', billStart); } catch(e){} seSel = null; drawSpend(); };
+setPer(sePer); loadSpend(); setInterval(loadSpend, 600000);
+
+function restyleCharts(){ loadDay(); loadDays(); if (!$('oct-linked').hidden) loadOctopusDays(); drawSavings(); drawSpend(); }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', restyleCharts);
 loadDay(); loadDays();
 setInterval(() => { if (ymd(curDate) === ymd(new Date())) loadDay(); }, 120000);

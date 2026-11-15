@@ -99,7 +99,24 @@ export class OctopusClient {
             {period_from: from.toISOString(), period_to: to.toISOString(), page_size: 25000, order_by: "period"});
     }
 
+    // Rates for whole calendar months, cached, so costing a year of days one by one doesn't mean thousands of requests.
+    private rateCache = new Map<string, {at : number, rates : Promise<Array<Rate>>}>();
+
     async rates(tariffCode : string, kind : "standard-unit-rates" | "standing-charges" | "day-unit-rates" | "night-unit-rates", from : Date, to : Date) : Promise<Array<Rate>> {
+        const monthFrom = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() - (from.getUTCDate() === 1 ? 1 : 0), 1));
+        const monthTo = new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth() + 1, 2));
+        const key = `${tariffCode}|${kind}|${monthFrom.toISOString()}|${monthTo.toISOString()}`;
+        const hit = this.rateCache.get(key);
+        // Past months never change; the current month is refreshed every few hours.
+        if (hit && (monthTo.getTime() < Date.now() || Date.now() - hit.at < 3 * 3_600_000)) return hit.rates;
+        const rates = this.fetchRates(tariffCode, kind, monthFrom, monthTo);
+        this.rateCache.set(key, {at: Date.now(), rates});
+        rates.catch(() => this.rateCache.delete(key));
+        if (this.rateCache.size > 500) this.rateCache.delete(this.rateCache.keys().next().value!);
+        return rates;
+    }
+
+    private async fetchRates(tariffCode : string, kind : string, from : Date, to : Date) : Promise<Array<Rate>> {
         const rates = await this.restAll<Rate>(
             `/products/${productCode(tariffCode)}/electricity-tariffs/${tariffCode}/${kind}/`,
             {period_from: from.toISOString(), period_to: to.toISOString(), page_size: 1500});

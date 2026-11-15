@@ -123,7 +123,7 @@ const octopusRoute = async (request : IncomingMessage, response : ServerResponse
     try {
         if (request.method === "GET" && path === "/api/octopus") return json(response, 200, await octopus.status());
         if (request.method === "GET" && path === "/api/octopus/days") {
-            const n = Math.min(366, Math.max(1, Number(url.searchParams.get("n")) || 30));
+            const n = Math.min(800, Math.max(1, Number(url.searchParams.get("n")) || 30));
             return json(response, 200, await octopus.days(n));
         }
         if (request.method === "POST" && path === "/api/octopus/sync") return json(response, 200, await octopus.sync(person));
@@ -179,7 +179,7 @@ const handle = async (request : IncomingMessage, response : ServerResponse) => {
         return isDate(date) ? json(response, 200, await dayView(date)) : json(response, 400, {error: "date must be YYYY-MM-DD"});
     }
     if (request.method === "GET" && path === "/api/days") {
-        const n = Math.min(366, Math.max(1, Number(url.searchParams.get("n")) || 30));
+        const n = Math.min(800, Math.max(1, Number(url.searchParams.get("n")) || 30));
         return json(response, 200, await dailyHistory(n));
     }
     if (request.method === "GET" && path === "/api/alerts") return json(response, 200, await alertList());

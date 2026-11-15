@@ -7,7 +7,7 @@ import {daySavings} from "./savings.js";
 import {Account, krakenApiBase, OctopusClient, OctopusError, rateAt, unitRates} from "./octopusClient.js";
 
 const keyName = "octopus-api-key";
-const backfillDays = 30;
+const backfillDays = 400;          // a year and a bit, so years and billing periods can be compared
 const giveUpAfterDays = 7;          // cost a day with whatever readings arrived once it is this old
 const syncer = new Code("octopus");
 const round = (n : number, dp = 2) => Math.round(n * 10 ** dp) / 10 ** dp;
@@ -217,6 +217,9 @@ export class OctopusService {
             return {kwh, pounds: pence / 100, tariff, standing: standing == null ? null : standing / 100, rows, rates};
         };
 
+        if (!(await this.intervals.forDay(date, "import")).length)
+            return {note: "Octopus has no meter readings for this day", importKwh: null, exportKwh: null, importCost: null,
+                standingCharge: null, exportEarnings: null, netCost: null, savings: null, withoutSystemCost: null};
         const imp = await price("import", link.importMpan);
         const exp = await price("export", link.exportMpan);
         const expected = Math.round((end - start) / 1800);
