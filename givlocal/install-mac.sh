@@ -58,7 +58,11 @@ else
 fi
 
 title "Installing to $DEST"
-launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null && ok "Stopped the running copy to update it" || true
+if launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null; then
+    # macOS finishes stopping a service in the background; starting it again too soon fails.
+    for _ in $(seq 1 30); do launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || break; sleep 0.5; done
+    ok "Stopped the running copy to update it"
+fi
 mkdir -p "$DEST/static"
 cp "$SRC"/app.py "$SRC"/givproto.py "$SRC"/start.sh "$DEST"/
 if [[ -f "$SRC/README.md" ]]; then cp "$SRC/README.md" "$DEST/"; fi
@@ -107,7 +111,17 @@ cat > "$PLIST" <<EOF
 </plist>
 EOF
 launchctl enable "$DOMAIN/$LABEL"
-launchctl bootstrap "$DOMAIN" "$PLIST"
+started=""
+for _ in 1 2 3 4 5 6; do
+    if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; then
+        started=1; break
+    fi
+    sleep 2
+done
+if [[ -z "$started" ]]; then
+    warn "macOS wouldn't start the collector. Restart this Mac, log in and run ./install-mac.sh again."
+    exit 1
+fi
 up=""
 for _ in $(seq 1 20); do
     curl -s -o /dev/null -m 2 "http://localhost:$PORT/api/live" && { up=1; break; }

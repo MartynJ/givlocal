@@ -28,7 +28,11 @@ case "${1:-}" in
     --resume)
         [[ -f "$PLIST" ]] || { warn "GivLocal was never installed on this Mac."; exit 1; }
         launchctl enable "$DOMAIN/$LABEL"
-        launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null || true
+        for _ in 1 2 3 4 5 6; do
+            launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null && break
+            sleep 2
+        done
+        launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || { warn "macOS wouldn't start it. Restart this Mac and try again."; exit 1; }
         ok "Collecting on this Mac again"
         exit 0 ;;
     --stop-only)
