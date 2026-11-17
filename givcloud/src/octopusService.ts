@@ -9,6 +9,8 @@ import {Account, krakenApiBase, OctopusClient, OctopusError, rateAt, unitRates} 
 const keyName = "octopus-api-key";
 const backfillDays = 400;          // a year and a bit, so years and billing periods can be compared
 const giveUpAfterDays = 7;          // cost a day with whatever readings arrived once it is this old
+const exportGiveUpAfterDays = 14;   // export readings often arrive later than import ones
+const recheckDays = 16;             // costed days younger than this are checked against fresh readings on each sync
 const syncer = new Code("octopus");
 const round = (n : number, dp = 2) => Math.round(n * 10 ** dp) / 10 ** dp;
 
@@ -136,7 +138,7 @@ export class OctopusService {
         setTimeout(() => this.sync(syncer).catch((e) => console.error("octopus sync", e)), 3000);
     }
 
-    sync(actor : Actor) : Promise<{daysOpened : number, daysComplete : number, problem : string | null}> {
+    sync(actor : Actor) : Promise<{daysOpened : number, daysComplete : number, recosted? : number, retotalled? : number, problem : string | null}> {
         const run = this.queue.then(() => this.syncNow(actor));
         this.queue = run.catch(() => undefined);
         return run;
@@ -157,9 +159,11 @@ export class OctopusService {
             }
             const waiting = (await this.monitor.jobs("meter-days", ["awaiting-meter-data"]))
                 .map(({job, props}) => ({job, date: props.get("date") as string}));
-            if (!waiting.length) return {daysOpened, daysComplete: 0, problem: null};
-
-            const from = new Date(dayStart(waiting.map((w) => w.date).sort()[0]) * 1000), to = new Date();
+            // Recent days are fetched again too: Octopus can publish or correct a day's readings (export ones especially)
+            // after the day was costed.
+            const recheckFrom = addDays(today(), -recheckDays);
+            const earliest = [recheckFrom, ...waiting.map((w) => w.date)].sort()[0];
+            const from = new Date(dayStart(earliest) * 1000), to = new Date();
             const fetchInto = async (direction : Direction, mpan : string | null, serial : string | null) => {
                 if (!mpan || !serial) return;
                 const rows = await api.consumption(mpan, serial, from, to);
@@ -172,16 +176,38 @@ export class OctopusService {
             for (const {job, date} of waiting) {
                 const expected = Math.round((dayEnd(date) - dayStart(date)) / 1800);
                 const received = (await this.intervals.forDay(date, "import")).length;
-                if (received >= expected || date < addDays(today(), -giveUpAfterDays)) {
+                const importDone = received >= expected || date < addDays(today(), -giveUpAfterDays);
+                // Without this, a day whose export readings hadn't arrived yet was costed as if nothing was exported.
+                const exportDone = !link.exportMpan || date < addDays(today(), -exportGiveUpAfterDays)
+                    || (await this.intervals.forDay(date, "export")).length >= expected;
+                if (importDone && exportDone) {
                     await this.daysMachine.updateJob(job.id, new Map<string, any>([
                         ["meterDataComplete", true], ["intervalsReceived", received], ["intervalsExpected", expected]]), actor);
                     daysComplete++;
                 }
             }
-            return {daysOpened, daysComplete, problem: null};
+            const recosted = await this.recostRecent(recheckFrom, actor);
+            const retotalled = await this.monitor.retotalRecent(recheckDays, actor);
+            return {daysOpened, daysComplete, recosted, retotalled, problem: null};
         } catch (error) {
             return {daysOpened: 0, daysComplete: 0, problem: error instanceof Error ? error.message : String(error)};
         }
+    }
+
+    // Costed days whose figures would now come out differently (late meter readings, corrected inverter data) are
+    // updated in place, so the change is recorded in the job's history.
+    private async recostRecent(from : string, actor : Actor) : Promise<number> {
+        let changed = 0;
+        for (const {job, props} of await this.monitor.jobs("meter-days", ["costed"])) {
+            const date = props.get("date") as string;
+            if (date < from) continue;
+            const fresh = Object.entries(await this.costDay(date));
+            if (fresh.some(([k, v]) => (props.get(k) ?? null) !== v)) {
+                await this.daysMachine.updateJob(job.id, new Map<string, any>(fresh), actor);
+                changed++;
+            }
+        }
+        return changed;
     }
 
     // ---- costing one day
@@ -225,6 +251,8 @@ export class OctopusService {
         const expected = Math.round((end - start) / 1800);
         const received = (await this.intervals.forDay(date, "import")).length;
         if (received < expected) notes.push(`Octopus had ${received} of ${expected} half-hourly readings`);
+        if (link.exportMpan && exp.rows.length < expected)
+            notes.push(`Octopus had ${exp.rows.length} of ${expected} export readings, so earnings may be understated`);
         const net = imp.pounds == null ? null : imp.pounds + (imp.standing ?? 0) - (exp.pounds ?? 0);
 
         // Savings need the inverter's readings for the day as well as the meter's.

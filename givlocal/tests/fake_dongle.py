@@ -15,7 +15,7 @@ regs.update({(3, 27): 1, (3, 94): 0, (3, 95): 530, (3, 96): 1, (3, 110): 4, (3, 
 
 def frame(slave, func, payload):
     body = ADAPTER + b"\0" * 8 + bytes([slave, func]) + payload
-    body += struct.pack(">H", crc16_modbus(body[18:]))
+    body += struct.pack("<H", crc16_modbus(body[18:]))   # low byte first, as the real dongle sends it
     return HEADER.pack(0x5959, 1, len(body) + 2, 1, 2) + body
 
 

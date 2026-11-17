@@ -1,7 +1,8 @@
 import {Actor, Job, JobPersistence, StateMachine} from "anbaric";
 import type {AlertKind} from "./alerts.js";
 import {activeConditions} from "./conditions.js";
-import {today} from "./localDate.js";
+import {dayTotals} from "./dayTotals.js";
+import {addDays, today} from "./localDate.js";
 import type {ReadingStore} from "./readings.js";
 
 // Keeps the day and alert jobs in step with the readings: opens a day job for each new day,
@@ -34,6 +35,23 @@ export class HouseholdMonitor {
         if (!all.some(({props}) => props.get("date") === date)) {
             await this.days.startJob(new Map([["date", date]]), actor);
         }
+    }
+
+    // Totals for finished days are saved when the day closes. If the readings behind them change afterwards (a garbled
+    // reading is now left out, say), work them out again and update the saved figures.
+    async retotalRecent(sinceDays : number, actor : Actor) : Promise<number> {
+        const from = addDays(today(), -sinceDays);
+        let changed = 0;
+        for (const {job, props} of await this.jobs("energy-days", ["complete"])) {
+            const date = props.get("date") as string;
+            if (date < from) continue;
+            const fresh = Object.entries(dayTotals(await this.readings.forDay(date)));
+            if (fresh.some(([k, v]) => props.get(k) !== v)) {
+                await this.days.updateJob(job.id, new Map<string, any>(fresh), actor);
+                changed++;
+            }
+        }
+        return changed;
     }
 
     async endDaysBefore(date : string, actor : Actor) : Promise<number> {

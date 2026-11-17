@@ -1,7 +1,7 @@
 import {Code} from "anbaric";
 import type {HouseholdMonitor} from "./householdMonitor.js";
 import {localDate, today} from "./localDate.js";
-import {BatteryModule, Reading, ReadingExtra, readingColumns, ReadingStore} from "./readings.js";
+import {BatteryModule, isPlausible, Reading, ReadingExtra, readingColumns, ReadingStore} from "./readings.js";
 
 const collector = new Code("home-collector");
 const maxBatch = 500;
@@ -41,12 +41,15 @@ export const toReading = (body : any, nowSeconds : number) : Omit<Reading, "day"
 export const acceptUpload = async (body : unknown, readings : ReadingStore, monitor : HouseholdMonitor) => {
     const batch = (Array.isArray(body) ? body : [body]).slice(0, maxBatch);
     const now = Date.now() / 1000;
-    const parsed = batch.map((item) => toReading(item, now));
+    const all = batch.map((item) => toReading(item, now));
+    // Garbled readings are dropped rather than refused, so the collector doesn't keep resending them.
+    const parsed = all.filter(isPlausible);
+    if (!parsed.length) return {received: all.length, stored: 0, rejected: all.length};
     let stored = 0;
     for (const reading of parsed) if (await readings.add(reading, collector)) stored++;
     for (const day of new Set(parsed.map((r) => localDate(r.ts)))) await monitor.ensureDay(day, collector);
     const newest = Math.max(...parsed.map((r) => r.ts));
     await monitor.endDaysBefore(today(), collector);
     if (now - newest < 3600) await monitor.check(collector);
-    return {received: parsed.length, stored};
+    return {received: all.length, stored, rejected: all.length - parsed.length};
 };

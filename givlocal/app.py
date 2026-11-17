@@ -45,6 +45,15 @@ def _latest(cache, func, base, slaves=None):
 
 BATTERY_SLAVES = range(0x50, 0x58)  # AIO / HV battery modules
 
+# Limits no real reading can exceed; a reading outside them is garbled and isn't stored.
+LIMITS = {"soc": (0, 100), "p_battery": (-20000, 20000), "p_grid": (-30000, 30000), "p_load": (0, 30000),
+          "t_battery": (-40, 90), "t_inverter": (-40, 120), "e_import_day": (0, 300), "e_export_day": (0, 300),
+          "e_charge_day": (0, 300), "e_discharge_day": (0, 300), "e_pv_day": (0, 300)}
+
+
+def implausible(live):
+    return [f"{k}={live[k]}" for k, (low, high) in LIMITS.items() if k in live and not low <= live[k] <= high]
+
 
 def decode_live(cache):
     """Turn cached register blocks into named values."""
@@ -425,7 +434,10 @@ class Poller(threading.Thread):
                     log.debug("rx %s", {k: v for k, v in (m or {"raw": fr[:24].hex()}).items() if k != "values"})
                     if not m:
                         continue
-                    if m["kind"] in ("write", "error"):
+                    if m["kind"] == "corrupt":
+                        self.stats["corrupt"] = self.stats.get("corrupt", 0) + 1
+                        log.warning("ignored a garbled reply (func %s base %s slave 0x%02X)", m["func"], m["base"], m["slave"])
+                    elif m["kind"] in ("write", "error"):
                         self._write_reply(m)
                     elif m["kind"] == "heartbeat":
                         self.adapter = m["adapter"]
@@ -453,6 +465,10 @@ class Poller(threading.Thread):
             return
         cache, _ = self.snapshot()
         live = decode_live(cache)
+        bad = implausible(live)
+        if bad:
+            log.warning("not storing a reading with impossible values: %s", ", ".join(bad))
+            return
         raw = {f"{k[0]}:{k[1]}:{k[2]}": {"values": v["values"], "serial": v.get("serial")}
                for k, v in cache.items() if now - v["ts"] < 600}
         self.store.add(now, live, raw)

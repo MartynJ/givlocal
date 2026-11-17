@@ -80,8 +80,13 @@ def decode_frame(frame: bytes):
         return {"kind": "other", "func": func, "slave": slave, "adapter": adapter}
     inverter = p[20:30].decode(errors="replace")
     base, count = struct.unpack(">HH", p[30:34])
-    if count > 125 or len(p) < 34 + 2 * count:
+    end = 34 + 2 * count
+    if count > 125 or len(p) < end + 2:
         return None
-    values = list(struct.unpack(f">{count}H", p[34:34 + 2 * count]))
+    # The checksum covers slave address to last value, low byte first. The dongle now and then sends a garbled
+    # reply; without this check one was once stored as a 3,700 kWh battery discharge.
+    if crc16_modbus(p[18:end]) != struct.unpack("<H", p[end:end + 2])[0]:
+        return {"kind": "corrupt", "func": func, "slave": slave, "base": base, "adapter": adapter}
+    values = list(struct.unpack(f">{count}H", p[34:end]))
     return {"kind": "read", "func": func, "slave": slave, "base": base, "values": values,
             "adapter": adapter, "inverter": inverter}

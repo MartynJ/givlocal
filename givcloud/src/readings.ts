@@ -20,6 +20,21 @@ export type ReadingExtra = {
     modules? : Array<BatteryModule>,
 };
 
+// Limits no real reading from this kind of system can exceed. Now and then the dongle sends a garbled reply, and a
+// single impossible value (a 3,000 kWh day counter, say) would otherwise swamp a day's totals and savings.
+const limits : Partial<Record<typeof readingColumns[number], [number, number]>> = {
+    soc: [0, 100],
+    p_battery: [-20000, 20000], p_grid: [-30000, 30000], p_load: [0, 30000], p_pv: [0, 30000], p_inverter: [-20000, 20000],
+    t_battery: [-40, 90], t_inverter: [-40, 120],
+    e_import_day: [0, 300], e_export_day: [0, 300], e_charge_day: [0, 300], e_discharge_day: [0, 300], e_pv_day: [0, 300],
+};
+
+export const isPlausible = (reading : Partial<Record<typeof readingColumns[number], number | null>>) =>
+    Object.entries(limits).every(([column, [low, high]]) => {
+        const v = reading[column as typeof readingColumns[number]];
+        return v == null || (v >= low && v <= high);
+    });
+
 const usesPostgres = ["cloud", "postgres"].includes(process.env.ANBARIC_SQL_STORE_TYPE ?? "");
 
 // Statements are written with `?`; Postgres wants `$1, $2, …`.
@@ -57,19 +72,19 @@ export class ReadingStore {
     }
 
     async latest() : Promise<Reading | undefined> {
-        const rows = await this.sql.query(this.actor, "SELECT * FROM givlocal_readings ORDER BY ts DESC LIMIT 1");
-        return rows.length ? this.hydrate(rows[0]) : undefined;
+        const rows = await this.sql.query(this.actor, "SELECT * FROM givlocal_readings ORDER BY ts DESC LIMIT 5");
+        return rows.map((row) => this.hydrate(row)).find(isPlausible);
     }
 
     async forDay(day : string) : Promise<Array<Reading>> {
         const rows = await this.sql.query(this.actor, portable("SELECT * FROM givlocal_readings WHERE day = ? ORDER BY ts"), [day]);
-        return rows.map((row) => this.hydrate(row));
+        return rows.map((row) => this.hydrate(row)).filter(isPlausible);
     }
 
     async between(fromDay : string, toDay : string) : Promise<Array<Reading>> {
         const rows = await this.sql.query(this.actor,
             portable("SELECT * FROM givlocal_readings WHERE day >= ? AND day <= ? ORDER BY ts"), [fromDay, toDay]);
-        return rows.map((row) => this.hydrate(row));
+        return rows.map((row) => this.hydrate(row)).filter(isPlausible);
     }
 
     async count() : Promise<number> {
