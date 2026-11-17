@@ -19,6 +19,34 @@ Then open <http://localhost:8080>. From a phone on the same WiFi, use
 
 Options: `python3 app.py --inverter 192.168.1.50 --port 8080 --db givlocal.db`
 
+## Run it around the clock on a spare Mac
+
+The collector only sees readings while it's running, so it's best on a Mac that
+stays at home and never sleeps. A spare Apple silicon MacBook kept plugged in with
+the lid shut works well, and uses about as much power as a Raspberry Pi.
+
+On a fresh Mac, from this folder:
+
+```bash
+./install-mac.sh
+```
+
+It installs GivLocal in `~/Library/Application Support/GivLocal` and starts it at
+every log-in. It then offers to keep the Mac awake with the lid shut, to stop macOS
+installing updates by itself (which restarts the Mac), and to open Screen Sharing.
+It also checks FileVault and gives battery advice. `./install-mac.sh --undo` stops
+the collector and lets the Mac sleep normally again.
+
+To move from the Mac that collects now, keeping your history and upload settings:
+
+1. On the old Mac: `./pack-for-move.sh`. This stops collecting there and makes
+   `GivLocal-move.zip` on the Desktop.
+2. AirDrop the zip to the new Mac, unzip it, and run `./install-mac.sh` inside it.
+3. Delete the zip from both Macs, because it contains your upload token.
+
+`./pack-for-move.sh --resume` starts the old Mac collecting again if you change your mind.
+Only one Mac should collect at a time.
+
 ## What you get
 
 - Live power flow: grid, home, battery (plus solar, if the inverter reports any)
