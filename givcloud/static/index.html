@@ -318,9 +318,9 @@ th{color:var(--text2);font-weight:600}
         <div class="chart sm" style="height:200px"><canvas id="oilUseChart"></canvas></div>
         <h2 style="margin-top:18px">Oil in the tank</h2>
         <div class="chart sm" style="height:180px"><canvas id="oilLevelChart"></canvas></div>
-        <p class="note">From BoilerJuice's figures for your tank: measured if you have a BoilerJuice tank monitor, otherwise BoilerJuice's own estimate.
-          Use is the fall in the level; a rise of more than about 100 litres counts as a delivery. BoilerJuice's website only shows today's level,
-          so the level history starts from when the account was connected and is read once a day; deliveries come from your order history.</p>
+        <p class="note">All the oil in the tank, from BoilerJuice: measured if you have a BoilerJuice tank monitor, otherwise BoilerJuice's own estimate.
+          The level is read once a day; earlier weekly levels were copied from BoilerJuice's app, as its website keeps no history.
+          Use is the fall in the level, spread evenly between readings. Where a delivery came in between, the litres on the order are allowed for.</p>
         <details><summary>Show as table</summary><div class="tablewrap"><table id="oilTable"></table></div></details>
         <details><summary>Deliveries</summary><div class="tablewrap"><table id="oilOrders"></table></div>
           <p class="note">From your BoilerJuice oil orders.</p></details>
@@ -863,11 +863,11 @@ async function loadOil(){
     return;
   }
   const r = st.latest;
-  $('oil-now').innerHTML = r ? litres(r.litres ?? r.totalLitres) : '–';
-  $('oil-now-sub').textContent = r ? (r.litres != null ? [`usable${r.percent != null ? ` (${Math.round(r.percent)}%)` : ''}`,
-      r.totalLitres != null ? `${Math.round(r.totalLitres).toLocaleString()} L in all` : null]
-    : [r.totalPercent != null ? `${Math.round(r.totalPercent)}% full` : null])
-    .concat([r.levelName, r.capacity ? `${Math.round(r.capacity).toLocaleString()} L tank` : null]).filter(Boolean).join(' · ') : '';
+  const inTank = r ? r.totalLitres ?? r.litres : null;
+  const full = r?.totalPercent ?? (inTank != null && r?.capacity ? inTank / r.capacity * 100 : null);
+  $('oil-now').innerHTML = litres(inTank);
+  $('oil-now-sub').textContent = r ? [full != null ? `${Math.round(full)}% full` : null, r.capacity ? `${Math.round(r.capacity).toLocaleString()} litre tank` : null]
+    .filter(Boolean).join(' · ') : '';
   $('oil-conn').innerHTML = `<dt>Tanks on the account</dt><dd>${esc(st.tankCount ?? '–')}${st.tankCount > 1 ? ' (showing the first)' : ''}</dd>
     <dt>Last checked</dt><dd>${st.lastChecked ? new Date(st.lastChecked * 1000).toLocaleString() : '–'}</dd>
     <dt>Problem</dt><dd>${st.problem ? esc(st.problem) : 'None'}</dd>`;
@@ -876,8 +876,8 @@ async function loadOil(){
   showOilAverage();
   $('oil-left').innerHTML = h.daysLeft == null ? '–' : `${h.daysLeft}<small>days</small>`;
   $('oil-left-sub').textContent = h.daysLeft == null ? 'Needs a couple of days of readings' :
-    `until the usable oil runs out at the last two weeks' rate, around ${new Date(Date.now() + h.daysLeft * 86400000).toLocaleDateString([], {day: 'numeric', month: 'short'})}`;
-  const order = h.orders.filter(o => o.delivered).at(-1), seen = h.deliveries.at(-1);
+    `until the tank is empty at the last two weeks' rate, around ${new Date(Date.now() + h.daysLeft * 86400000).toLocaleDateString([], {day: 'numeric', month: 'short'})}`;
+  const order = h.orders.filter(o => o.delivered).at(-1), seen = h.deliveries.filter(d => !d.fromOrder).at(-1);
   const seenNewer = seen && (!order || seen.date > order.delivered);
   $('oil-del').innerHTML = seenNewer ? litres(seen.litres) : order ? litres(order.litres) : '–';
   $('oil-del-sub').textContent = seenNewer ? `${fmtD(seen.date, {day: 'numeric', month: 'short', year: 'numeric'})} (seen in the level)`
@@ -927,8 +927,8 @@ function drawOil(){
   lo.scales.x = { ...lo.scales.x, type: 'linear', ticks: { ...lo.scales.x.ticks, callback: v => new Date(v * 1000).toLocaleDateString([], {day: 'numeric', month: 'short'}) } };
   lo.scales.y.min = 0; if (oilHist.capacity) lo.scales.y.suggestedMax = oilHist.capacity;
   lo.plugins.tooltip.callbacks = { title: it => new Date(it[0].parsed.x * 1000).toLocaleString([], {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}),
-    label: c => ` ${Math.round(c.parsed.y)} litres usable` };
-  draw('oilLevelChart', { type: 'line', data: { datasets: [{ ...line('Usable oil', '--oil', rs.map(r => ({x: r.ts, y: r.litres ?? r.totalLitres}))), stepped: false, tension: 0 }] },
+    label: c => ` ${Math.round(c.parsed.y)} litres in the tank` };
+  draw('oilLevelChart', { type: 'line', data: { datasets: [{ ...line('Oil in the tank', '--oil', rs.map(r => ({x: r.ts, y: r.litres}))), stepped: false, tension: 0 }] },
     options: lo, plugins: [crosshair] });
   $('oilTable').innerHTML = '<tr><th>Period</th><th>Oil used</th></tr>' +
     g.slice().reverse().map(x => `<tr><td>${esc(svLabel[oilPer](x.key))}</td><td>${x.known ? Math.round(x.used) + ' litres' : '–'}</td></tr>`).join('') +

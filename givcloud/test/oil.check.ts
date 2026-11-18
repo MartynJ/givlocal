@@ -56,4 +56,24 @@ const since = useSince(points, 1225, start + 4 * 86400);
 check("average over a period leaves out the delivery", since != null && Math.abs(since.perDay - 10) < 1.5, JSON.stringify(since));
 check("no average from under a day", useSince(points, 1225, points[points.length - 3].ts) === null);
 
+
+// Weekly readings copied from BoilerJuice's app, with the 500-litre delivery on 23 Sep from the orders.
+const { dayStart } = await import("../src/localDate.js");
+const weekly = [["2026-09-14", 880], ["2026-09-21", 870], ["2026-09-28", 1320], ["2026-10-05", 1320], ["2026-10-12", 1300],
+    ["2026-10-26", 1260], ["2026-11-02", 1240], ["2026-11-09", 1190], ["2026-11-16", 1130]]
+    .map(([d, l]) => ({ts: dayStart(d as string) + 43200, litres: l as number}));
+const sepOrder = [{date: "2026-09-23", litres: 500}];
+const w = oilUsage(weekly, 2500, sepOrder);
+check("delivery taken from the order", w.deliveries.length === 1 && w.deliveries[0].fromOrder && w.deliveries[0].litres === 500, JSON.stringify(w.deliveries));
+const sepWeek = useSince(weekly.slice(1, 3), 2500, 0, sepOrder)!.used;
+check("delivery week's use allowed for: 870 + 500 − 1320 = 50", Math.abs(sepWeek - 50) < 1, sepWeek.toFixed(1));
+const novDay = w.days.find((d) => d.date === "2026-11-05")?.used;
+check("a week's fall spread over its days (50 litres / 7)", novDay != null && Math.abs(novDay - 50 / 7) < 0.2, String(novDay));
+const sinceDelivery = useSince(weekly, 2500, dayStart("2026-09-23"), sepOrder);
+check("since the delivery: 1370 − 1130 over 54 days", sinceDelivery != null && Math.abs(sinceDelivery.used - (870 + 500 - 1130) * (5 / 7) - 0) < 60
+    && sinceDelivery.days > 50 && sinceDelivery.days < 56, JSON.stringify(sinceDelivery));
+const noOrder = oilUsage(weekly, 2500);
+check("without the order, the delivery week is left out rather than guessed",
+    noOrder.deliveries[0].fromOrder === false && !noOrder.days.some((d) => d.date === "2026-09-24"), JSON.stringify(noOrder.deliveries));
+
 process.exit(failed ? 1 : 0);

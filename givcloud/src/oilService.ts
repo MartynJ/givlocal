@@ -1,5 +1,6 @@
 import {Actor, Code, Human, SecretStore, StateMachine} from "anbaric";
 import type {HouseholdMonitor} from "./householdMonitor.js";
+import {dayStart} from "./localDate.js";
 import {BoilerJuiceClient, OilError, TankReading} from "./oilClient.js";
 import type {OilReadings, StoredOilReading} from "./oilReadings.js";
 import {OilPoint, oilUsage, recentRate, useSince} from "./oilUsage.js";
@@ -10,7 +11,7 @@ const reader = new Code("boilerjuice");
 
 export type OilLink = {tankId : string, tankCount : number};
 
-// The level used for usage: all the oil in the tank where BoilerJuice gives it, else the usable oil.
+// What's in the tank: all the oil, as BoilerJuice gives it. (Its "usable oil" figure isn't used.)
 const level = (r : StoredOilReading) : number | null => r.totalLitres ?? r.litres;
 
 // Everything that talks to BoilerJuice: the sign-in kept in the secret store, finding the tank and reading its level.
@@ -170,22 +171,31 @@ export class OilService {
         const rows = await this.readings.since(Date.now() / 1000 - days * 86400);
         const capacity = [...rows].reverse().find((r) => r.capacity != null)?.capacity ?? null;
         const points : Array<OilPoint> = rows.flatMap((r) => level(r) == null ? [] : [{ts: r.ts, litres: level(r)!}]);
-        const {days: usage, deliveries} = oilUsage(points, capacity);
-        const rate = recentRate(points, capacity);
-        const latest = rows.at(-1);
-        const usable = latest?.litres ?? (latest ? level(latest) : null);
         const orders = (await this.readings.orders()).map((o) => ({...o,
             cost: o.pencePerLitre == null ? null : Math.round(o.litres * o.pencePerLitre) / 100}));
-        const lastDelivered = [...orders].reverse().find((o) => o.delivered)?.delivered ?? null;
+        const delivered = orders.flatMap((o) => o.delivered ? [{date: o.delivered, litres: o.litres}] : []);
+        const {days: usage, deliveries} = oilUsage(points, capacity, delivered);
+        const rate = recentRate(points, capacity, 14, delivered);
+        const inTank = points.at(-1)?.litres ?? null;
+        const lastDelivered = delivered.at(-1)?.date ?? null;
         const now = Date.now() / 1000;
-        const periods = Object.fromEntries([["7", 7], ["30", 30], ["90", 90], ["365", 365]]
-            .map(([k, n]) => [k, useSince(points, capacity, now - (n as number) * 86400)]));
-        periods.delivery = lastDelivered ? useSince(points, capacity, Date.parse(lastDelivered + "T00:00:00Z") / 1000) : null;
+        const periods : Record<string, ReturnType<typeof useSince>> = Object.fromEntries([7, 30, 90, 365]
+            .map((n) => [String(n), useSince(points, capacity, now - n * 86400, delivered)]));
+        periods.delivery = lastDelivered ? useSince(points, capacity, dayStart(lastDelivered), delivered) : null;
         return {
-            capacity, readings: rows.map((r) => ({ts: r.ts, litres: r.litres, totalLitres: r.totalLitres, percent: r.percent})),
+            capacity, readings: points.map((p) => ({ts: p.ts, litres: p.litres})),
             days: usage, deliveries, orders, lastDelivered, periods,
             ratePerDay: rate == null ? null : Math.round(rate * 10) / 10,
-            daysLeft: rate && usable != null ? Math.floor(usable / rate) : null,
+            daysLeft: rate && inTank != null ? Math.floor(inTank / rate) : null,
         };
+    }
+
+    // Past levels typed in from BoilerJuice's app (its website keeps no history): one total per date, taken as midday.
+    async importLevels(levels : Array<{date : string, litres : number}>, person : Human) {
+        for (const {date, litres} of levels) {
+            await this.readings.add(dayStart(date) + 12 * 3600, {litres: null, totalLitres: litres, percent: null, totalPercent: null,
+                capacity: null, levelName: null}, person);
+        }
+        return {imported: levels.length};
     }
 }

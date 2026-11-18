@@ -170,6 +170,14 @@ const oilRoute = async (request : IncomingMessage, response : ServerResponse, pa
             return json(response, 200, await oil.history(n));
         }
         if (request.method === "POST" && path === "/api/oil/refresh") return json(response, 200, await oil.poll(true));
+        if (request.method === "POST" && path === "/api/oil/import") {
+            const levels = (await readBody(request, 100_000))?.levels;
+            if (!Array.isArray(levels) || !levels.length || levels.length > 1000
+                || !levels.every((l : any) => isDate(l?.date) && typeof l?.litres === "number" && l.litres >= 0 && l.litres <= 100_000)) {
+                return json(response, 400, {error: "Send {levels: [{date: \"YYYY-MM-DD\", litres: number}, …]}"});
+            }
+            return json(response, 200, await oil.importLevels(levels, person));
+        }
         if (request.method === "GET" && path === "/api/oil/diagnostics")
             return json(response, 200, await oil.diagnostics(url.searchParams.get("path") ?? undefined));
         if (request.method === "POST" && path === "/api/oil/login") {
