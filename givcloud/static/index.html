@@ -10,7 +10,7 @@
   color-scheme: light;
   --bg:#f4f4f2; --surface:#fcfcfb; --line:#e4e3df; --grid:#ecebe7;
   --text:#0b0b0b; --text2:#52514e; --muted:#85847f;
-  --home:#2a78d6; --grid-c:#eb6834; --batt:#1baf7a; --solar:#eda100; --export:#e87ba4;
+  --home:#2a78d6; --grid-c:#eb6834; --batt:#1baf7a; --solar:#eda100; --export:#e87ba4; --oil:#7c5cd8;
   --good:#1a8a3a; --warn:#b26b00; --bad:#c62f2f;
 }
 @media (prefers-color-scheme: dark){
@@ -18,7 +18,7 @@
     color-scheme: dark;
     --bg:#111110; --surface:#1a1a19; --line:#2c2c2a; --grid:#262624;
     --text:#f0efec; --text2:#c3c2b7; --muted:#8d8c85;
-    --home:#3987e5; --grid-c:#d95926; --batt:#199e70; --solar:#c98500; --export:#d55181;
+    --home:#3987e5; --grid-c:#d95926; --batt:#199e70; --solar:#c98500; --export:#d55181; --oil:#9a82ec;
     --good:#4cbf6b; --warn:#e0a030; --bad:#e66767;
   }
 }
@@ -26,7 +26,7 @@
   color-scheme: dark;
   --bg:#111110; --surface:#1a1a19; --line:#2c2c2a; --grid:#262624;
   --text:#f0efec; --text2:#c3c2b7; --muted:#8d8c85;
-  --home:#3987e5; --grid-c:#d95926; --batt:#199e70; --solar:#c98500; --export:#d55181;
+  --home:#3987e5; --grid-c:#d95926; --batt:#199e70; --solar:#c98500; --export:#d55181; --oil:#9a82ec;
   --good:#4cbf6b; --warn:#e0a030; --bad:#e66767;
 }
 *{box-sizing:border-box}
@@ -280,6 +280,49 @@ th{color:var(--text2);font-weight:600}
       <div class="chart" style="height:240px;margin-top:14px"><canvas id="svChart"></canvas><div class="empty" id="sv-empty" hidden>Savings appear once a day has both inverter readings and Octopus meter readings – usually the following day.</div></div>
       <p class="note">Saving = what the electricity your home used would have cost from the grid on the same tariff, half hour by half hour, minus what you actually paid Octopus after export earnings. Standing charges are the same either way. Days when the home collector was offline for part of the day are marked as estimates.</p>
       <details><summary>Show as table</summary><div class="tablewrap"><table id="svTable"></table></div></details>
+    </section>
+
+    <section class="card c12" id="oil">
+      <div class="toolbar">
+        <h2>Heating oil</h2>
+        <span class="note" id="oil-checked" style="margin:0"></span>
+        <div class="seg" id="oil-per" role="group" aria-label="Group oil use by" hidden>
+          <button data-per="day" aria-pressed="false">Day</button><button data-per="week" aria-pressed="true">Week</button><button data-per="month" aria-pressed="false">Month</button>
+        </div>
+      </div>
+      <div id="oil-setup" hidden>
+        <p style="margin:0 0 10px;color:var(--text2);font-size:14px">Add your BoilerJuice account to track the oil in your tank and how much you use.
+          BoilerJuice has no official API, so the app signs in to boilerjuice.com as you and reads the level from your tank's page every three hours.
+          Your sign-in is kept in the app's secret store and only used for that.</p>
+        <form id="oil-form" style="display:flex;gap:8px;flex-wrap:wrap">
+          <input id="oil-email" type="email" autocomplete="off" spellcheck="false" placeholder="BoilerJuice email" aria-label="BoilerJuice email"
+            style="font:inherit;font-size:13px;flex:1;min-width:200px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text)">
+          <input id="oil-password" type="password" autocomplete="off" placeholder="BoilerJuice password" aria-label="BoilerJuice password"
+            style="font:inherit;font-size:13px;flex:1;min-width:180px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text)">
+          <button class="btn-primary" id="oil-save">Connect BoilerJuice</button>
+        </form>
+        <p class="note" id="oil-msg" role="status"></p>
+      </div>
+      <div id="oil-linked" hidden>
+        <div class="tiles" style="--n:4">
+          <div class="tile"><div class="l"><i style="background:var(--oil)"></i>In the tank</div><div class="v" id="oil-now">–</div><div class="note" id="oil-now-sub" style="margin-top:2px"></div></div>
+          <div class="tile"><div class="l">Used in the last 7 days</div><div class="v" id="oil-week">–</div><div class="note" id="oil-week-sub" style="margin-top:2px"></div></div>
+          <div class="tile"><div class="l">Lasts about</div><div class="v" id="oil-left">–</div><div class="note" id="oil-left-sub" style="margin-top:2px"></div></div>
+          <div class="tile"><div class="l">Last delivery</div><div class="v" id="oil-del">–</div><div class="note" id="oil-del-sub" style="margin-top:2px"></div></div>
+        </div>
+        <h2 style="margin-top:18px">Oil used</h2>
+        <div class="chart sm" style="height:200px"><canvas id="oilUseChart"></canvas></div>
+        <h2 style="margin-top:18px">Oil in the tank</h2>
+        <div class="chart sm" style="height:180px"><canvas id="oilLevelChart"></canvas></div>
+        <p class="note">From BoilerJuice's figures for your tank: measured if you have a BoilerJuice tank monitor, otherwise BoilerJuice's own estimate.
+          Use is the fall in the level; a rise of more than about 100 litres counts as a delivery. History starts from when the account was connected.</p>
+        <details><summary>Show as table</summary><div class="tablewrap"><table id="oilTable"></table></div></details>
+        <details><summary>BoilerJuice connection</summary>
+          <dl class="kv" style="margin-top:8px" id="oil-conn"></dl>
+          <p><button id="oil-refresh">Check the level now</button> <button id="oil-disconnect">Disconnect BoilerJuice</button>
+            <span class="note">Disconnecting removes the sign-in; levels already read are kept.</span></p>
+        </details>
+      </div>
     </section>
 
     <section class="card c12" id="octopus">
@@ -796,7 +839,105 @@ $('se-next').onclick = () => { const all = seGroups(), i = all.findIndex(g => g.
 $('se-start').onchange = () => { billStart = +$('se-start').value; try { localStorage.setItem('billStart', billStart); } catch(e){} seSel = null; drawSpend(); };
 setPer(sePer); loadSpend(); setInterval(loadSpend, 600000);
 
-function restyleCharts(){ loadDay(); loadDays(); if (!$('oct-linked').hidden) loadOctopusDays(); drawSavings(); drawSpend(); }
+// ---------- heating oil (tank levels read from BoilerJuice)
+let oilPer = 'week', oilHist = null;
+try { const p = localStorage.getItem('oilPer'); if (['day', 'week', 'month'].includes(p)) oilPer = p; } catch(e){}
+const litres = v => v == null ? '–' : `${Math.round(v).toLocaleString()}<small>litres</small>`;
+async function loadOil(){
+  let st; try { st = await (await api('api/oil')).json(); } catch(e){ return; }
+  const linked = st.state === 'linked';
+  $('oil-setup').hidden = linked; $('oil-linked').hidden = !linked; $('oil-per').hidden = !linked;
+  $('oil-checked').textContent = linked && st.lastChecked ? `Checked ${fmtAge(Date.now() / 1000 - st.lastChecked)} ago` : '';
+  if (!linked) {
+    const busy = st.state === 'finding-tank';
+    $('oil-save').disabled = busy;
+    $('oil-msg').textContent = busy ? 'Signing in to BoilerJuice and finding your tank…' : st.problem ? `Couldn't connect: ${st.problem}` : '';
+    if (busy) setTimeout(loadOil, 2000);
+    return;
+  }
+  const r = st.latest;
+  $('oil-now').innerHTML = r ? litres(r.litres ?? r.totalLitres) : '–';
+  $('oil-now-sub').textContent = r ? [r.percent != null ? `${Math.round(r.percent)}% full` : null, r.levelName, r.capacity ? `${Math.round(r.capacity).toLocaleString()} litre tank` : null].filter(Boolean).join(' · ') : '';
+  $('oil-conn').innerHTML = `<dt>Tanks on the account</dt><dd>${esc(st.tankCount ?? '–')}${st.tankCount > 1 ? ' (showing the first)' : ''}</dd>
+    <dt>Last checked</dt><dd>${st.lastChecked ? new Date(st.lastChecked * 1000).toLocaleString() : '–'}</dd>
+    <dt>Problem</dt><dd>${st.problem ? esc(st.problem) : 'None'}</dd>
+    ${r && r.totalLitres != null && r.litres != null ? `<dt>All oil incl. below the outlet</dt><dd>${Math.round(r.totalLitres).toLocaleString()} litres</dd>` : ''}`;
+  try { oilHist = await (await api('api/oil/history?days=400')).json(); } catch(e){ return; }
+  const h = oilHist, recent = h.days.filter(d => d.date > ymd(new Date(Date.now() - 7 * 86400000)));
+  const week = recent.reduce((s, d) => s + d.used, 0);
+  $('oil-week').innerHTML = h.days.length ? litres(week) : '–';
+  $('oil-week-sub').textContent = h.ratePerDay != null ? `about ${h.ratePerDay.toFixed(1)} litres a day lately` : 'Needs a couple of days of readings';
+  $('oil-left').innerHTML = h.daysLeft == null ? '–' : `${h.daysLeft}<small>days</small>`;
+  $('oil-left-sub').textContent = h.daysLeft == null ? 'Needs a couple of days of readings' :
+    `until the usable oil runs out at that rate, around ${new Date(Date.now() + h.daysLeft * 86400000).toLocaleDateString([], {day: 'numeric', month: 'short'})}`;
+  const last = h.deliveries.at(-1);
+  $('oil-del').innerHTML = last ? litres(last.litres) : '–';
+  $('oil-del-sub').textContent = last ? new Date(last.ts * 1000).toLocaleDateString([], {day: 'numeric', month: 'short', year: 'numeric'}) : 'None seen since connecting';
+  drawOil();
+}
+function oilGroups(){
+  const h = oilHist; if (!h?.readings.length) return [];
+  const byDay = new Map(h.days.map(d => [d.date, d.used]));
+  const first = ymd(new Date(h.readings[0].ts * 1000)), today = ymd(new Date());
+  const groups = new Map();
+  for (let d = new Date(first + 'T12:00'); ymd(d) <= today; d.setDate(d.getDate() + 1)) {
+    const day = ymd(d), k = svKey[oilPer](day);
+    const g = groups.get(k) ?? {key: k, used: 0, known: 0};
+    if (byDay.has(day)) { g.used += byDay.get(day); g.known++; }
+    groups.set(k, g);
+  }
+  return [...groups.values()].slice(-svBars[oilPer]);
+}
+function drawOil(){
+  if (!oilHist || $('oil-linked').hidden) return;
+  document.querySelectorAll('#oil-per button').forEach(b => b.setAttribute('aria-pressed', b.dataset.per === oilPer));
+  const g = oilGroups();
+  const o = baseOpts('litres');
+  o.plugins.tooltip.callbacks = { label: c => ` Used: ${Math.round(c.parsed.y)} litres`,
+    afterBody: it => { const x = g[it[0].dataIndex]; return x.known ? '' : '\nNo readings yet'; } };
+  draw('oilUseChart', { type: 'bar', data: { labels: g.map(x => svLabel[oilPer](x.key)),
+    datasets: [{ label: 'Oil used', data: g.map(x => x.known ? Math.round(x.used * 10) / 10 : null), backgroundColor: css('--oil'),
+      borderRadius: 4, borderSkipped: 'bottom', borderColor: css('--surface'), borderWidth: { left: 1, right: 1 }, maxBarThickness: 18 }] }, options: o });
+  const rs = oilHist.readings, lo = baseOpts('litres');
+  lo.scales.x = { ...lo.scales.x, type: 'linear', ticks: { ...lo.scales.x.ticks, callback: v => new Date(v * 1000).toLocaleDateString([], {day: 'numeric', month: 'short'}) } };
+  lo.scales.y.min = 0; if (oilHist.capacity) lo.scales.y.suggestedMax = oilHist.capacity;
+  lo.plugins.tooltip.callbacks = { title: it => new Date(it[0].parsed.x * 1000).toLocaleString([], {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}),
+    label: c => ` ${Math.round(c.parsed.y)} litres usable` };
+  draw('oilLevelChart', { type: 'line', data: { datasets: [{ ...line('Usable oil', '--oil', rs.map(r => ({x: r.ts, y: r.litres ?? r.totalLitres}))), stepped: false, tension: 0 }] },
+    options: lo, plugins: [crosshair] });
+  $('oilTable').innerHTML = '<tr><th>Period</th><th>Oil used</th></tr>' +
+    g.slice().reverse().map(x => `<tr><td>${esc(svLabel[oilPer](x.key))}</td><td>${x.known ? Math.round(x.used) + ' litres' : '–'}</td></tr>`).join('') +
+    (oilHist.deliveries.length ? '<tr><th>Delivery</th><th>Litres</th></tr>' + oilHist.deliveries.slice().reverse()
+      .map(d => `<tr><td>${new Date(d.ts * 1000).toLocaleDateString()}</td><td>${d.litres} litres</td></tr>`).join('') : '');
+}
+document.querySelectorAll('#oil-per button').forEach(b => b.onclick = () => {
+  oilPer = b.dataset.per; try { localStorage.setItem('oilPer', oilPer); } catch(e){} drawOil(); });
+$('oil-form').onsubmit = async ev => {
+  ev.preventDefault();
+  const email = $('oil-email').value.trim(), password = $('oil-password').value;
+  if (!email || !password) return;
+  $('oil-save').disabled = true; $('oil-msg').textContent = 'Saving…';
+  try {
+    const r = await api('api/oil/login', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({email, password})});
+    if (!r.ok) { $('oil-msg').textContent = (await r.json()).error ?? 'Could not save the sign-in'; $('oil-save').disabled = false; return; }
+    $('oil-password').value = '';
+    $('oil-msg').textContent = 'Signing in to BoilerJuice and finding your tank…';
+    setTimeout(loadOil, 2000);
+  } catch(e){ $('oil-save').disabled = false; }
+};
+$('oil-refresh').onclick = async () => {
+  $('oil-refresh').disabled = true;
+  try { const r = await (await api('api/oil/refresh', {method: 'POST'})).json(); if (r.problem) alert(`BoilerJuice: ${r.problem}`); } catch(e){}
+  $('oil-refresh').disabled = false; loadOil();
+};
+$('oil-disconnect').onclick = async () => {
+  if (!confirm('Disconnect BoilerJuice and remove the sign-in?')) return;
+  await api('api/oil/disconnect', {method: 'POST'}); loadOil();
+};
+loadOil();
+setInterval(loadOil, 900000);
+
+function restyleCharts(){ loadDay(); loadDays(); if (!$('oct-linked').hidden) loadOctopusDays(); drawSavings(); drawSpend(); drawOil(); }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', restyleCharts);
 loadDay(); loadDays();
 setInterval(() => { if (ymd(curDate) === ymd(new Date())) loadDay(); }, 120000);

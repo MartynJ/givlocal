@@ -18,6 +18,10 @@ import {MeterIntervals} from "./meterIntervals.js";
 import {OctopusError} from "./octopusClient.js";
 import {meterDaysMachine, octopusLinkMachine} from "./octopusMachines.js";
 import {OctopusService} from "./octopusService.js";
+import {OilError} from "./oilClient.js";
+import {oilLinkMachine} from "./oilMachines.js";
+import {OilReadings} from "./oilReadings.js";
+import {OilService} from "./oilService.js";
 import {readingColumns, ReadingStore} from "./readings.js";
 
 const app = new Code("givlocal");
@@ -39,7 +43,18 @@ const octopus = new OctopusService(secrets, intervals, readings, monitor, app);
 octopus.attach(octopusLinkMachine(octopus, persistence, queue), meterDaysMachine(octopus, persistence, queue));
 await octopus.ensureLinkJob(app);
 octopus.syncSoon();   // catch up straight away after a restart or deploy
-const healthChecks = healthChecksMachine(monitor, octopus, persistence, queue);
+const oilReadings = new OilReadings(SqlStoreFactory.instance(), app);
+await oilReadings.prepare();
+const oil = new OilService(secrets, oilReadings, monitor, app);
+oil.attach(oilLinkMachine(oil, persistence, queue));
+await oil.ensureLinkJob(app);
+// The hourly run fetches Octopus readings and, every few hours, the oil tank's level.
+const hourly = {sync: async (actor : Code) => {
+    const meter = await octopus.sync(actor);
+    await oil.poll().catch((error) => console.error("oil poll", error));
+    return meter;
+}};
+const healthChecks = healthChecksMachine(monitor, hourly, persistence, queue);
 JobRunScheduler.instance().schedule(healthChecks, everyHour);
 
 const staticDir = join(dirname(fileURLToPath(import.meta.url)), "..", "static");
@@ -147,6 +162,32 @@ const octopusRoute = async (request : IncomingMessage, response : ServerResponse
     }
 };
 
+const oilRoute = async (request : IncomingMessage, response : ServerResponse, path : string, url : URL, person : Human) => {
+    try {
+        if (request.method === "GET" && path === "/api/oil") return json(response, 200, await oil.status());
+        if (request.method === "GET" && path === "/api/oil/history") {
+            const n = Math.min(800, Math.max(1, Number(url.searchParams.get("days")) || 400));
+            return json(response, 200, await oil.history(n));
+        }
+        if (request.method === "POST" && path === "/api/oil/refresh") return json(response, 200, await oil.poll(true));
+        if (request.method === "POST" && path === "/api/oil/login") {
+            const body = await readBody(request, 10_000);
+            const email = String(body?.email ?? "").trim(), password = String(body?.password ?? "");
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 200) return json(response, 400, {error: "Enter the email you use on BoilerJuice"});
+            if (!password || password.length > 200) return json(response, 400, {error: "Enter your BoilerJuice password"});
+            return json(response, 202, {id: await oil.saveLogin(email, password, person)});
+        }
+        if (request.method === "POST" && path === "/api/oil/disconnect") {
+            await oil.disconnect(person);
+            return json(response, 200, {ok: true});
+        }
+        return json(response, 404, {error: "not found"});
+    } catch (error) {
+        if (error instanceof OilError) return json(response, 502, {error: error.message});
+        throw error;
+    }
+};
+
 const handle = async (request : IncomingMessage, response : ServerResponse) => {
     const url = new URL(request.url ?? "/", "http://localhost");
     const path = url.pathname;
@@ -203,6 +244,7 @@ const handle = async (request : IncomingMessage, response : ServerResponse) => {
         return json(response, 200, {token: await token.get(), uploadPath: "ingest"});
     }
     if (path.startsWith("/api/octopus")) return octopusRoute(request, response, path, url, person);
+    if (path.startsWith("/api/oil")) return oilRoute(request, response, path, url, person);
     if (request.method === "GET" && path === "/api/export.csv") {
         const to = url.searchParams.get("to") ?? today(), from = url.searchParams.get("from") ?? addDays(to, -29);
         if (!isDate(from) || !isDate(to)) return json(response, 400, {error: "dates must be YYYY-MM-DD"});
