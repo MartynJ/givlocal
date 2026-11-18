@@ -292,7 +292,7 @@ th{color:var(--text2);font-weight:600}
       </div>
       <div id="oil-setup" hidden>
         <p style="margin:0 0 10px;color:var(--text2);font-size:14px">Add your BoilerJuice account to track the oil in your tank and how much you use.
-          BoilerJuice has no official API, so the app signs in to boilerjuice.com as you and reads the level from your tank's page every three hours.
+          BoilerJuice has no official API, so the app signs in to boilerjuice.com as you and reads the level from your tank's page once a day.
           Your sign-in is kept in the app's secret store and only used for that.</p>
         <form id="oil-form" style="display:flex;gap:8px;flex-wrap:wrap">
           <input id="oil-email" type="email" autocomplete="off" spellcheck="false" placeholder="BoilerJuice email" aria-label="BoilerJuice email"
@@ -306,7 +306,11 @@ th{color:var(--text2);font-weight:600}
       <div id="oil-linked" hidden>
         <div class="tiles" style="--n:4">
           <div class="tile"><div class="l"><i style="background:var(--oil)"></i>In the tank</div><div class="v" id="oil-now">–</div><div class="note" id="oil-now-sub" style="margin-top:2px"></div></div>
-          <div class="tile"><div class="l">Used in the last 7 days</div><div class="v" id="oil-week">–</div><div class="note" id="oil-week-sub" style="margin-top:2px"></div></div>
+          <div class="tile"><div class="l" style="justify-content:space-between">Average daily use
+            <select id="oil-period" aria-label="Average over" style="font-size:12px;padding:2px 4px">
+              <option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option>
+              <option value="365">Last year</option><option value="delivery">Since last delivery</option></select></div>
+            <div class="v" id="oil-avg">–</div><div class="note" id="oil-avg-sub" style="margin-top:2px"></div></div>
           <div class="tile"><div class="l">Lasts about</div><div class="v" id="oil-left">–</div><div class="note" id="oil-left-sub" style="margin-top:2px"></div></div>
           <div class="tile"><div class="l">Last delivery</div><div class="v" id="oil-del">–</div><div class="note" id="oil-del-sub" style="margin-top:2px"></div></div>
         </div>
@@ -315,8 +319,11 @@ th{color:var(--text2);font-weight:600}
         <h2 style="margin-top:18px">Oil in the tank</h2>
         <div class="chart sm" style="height:180px"><canvas id="oilLevelChart"></canvas></div>
         <p class="note">From BoilerJuice's figures for your tank: measured if you have a BoilerJuice tank monitor, otherwise BoilerJuice's own estimate.
-          Use is the fall in the level; a rise of more than about 100 litres counts as a delivery. History starts from when the account was connected.</p>
+          Use is the fall in the level; a rise of more than about 100 litres counts as a delivery. BoilerJuice's website only shows today's level,
+          so the level history starts from when the account was connected and is read once a day; deliveries come from your order history.</p>
         <details><summary>Show as table</summary><div class="tablewrap"><table id="oilTable"></table></div></details>
+        <details><summary>Deliveries</summary><div class="tablewrap"><table id="oilOrders"></table></div>
+          <p class="note">From your BoilerJuice oil orders.</p></details>
         <details><summary>BoilerJuice connection</summary>
           <dl class="kv" style="margin-top:8px" id="oil-conn"></dl>
           <p><button id="oil-refresh">Check the level now</button> <button id="oil-disconnect">Disconnect BoilerJuice</button>
@@ -857,23 +864,41 @@ async function loadOil(){
   }
   const r = st.latest;
   $('oil-now').innerHTML = r ? litres(r.litres ?? r.totalLitres) : '–';
-  $('oil-now-sub').textContent = r ? [r.percent != null ? `${Math.round(r.percent)}% full` : null, r.levelName, r.capacity ? `${Math.round(r.capacity).toLocaleString()} litre tank` : null].filter(Boolean).join(' · ') : '';
+  $('oil-now-sub').textContent = r ? (r.litres != null ? [`usable${r.percent != null ? ` (${Math.round(r.percent)}%)` : ''}`,
+      r.totalLitres != null ? `${Math.round(r.totalLitres).toLocaleString()} L in all` : null]
+    : [r.totalPercent != null ? `${Math.round(r.totalPercent)}% full` : null])
+    .concat([r.levelName, r.capacity ? `${Math.round(r.capacity).toLocaleString()} L tank` : null]).filter(Boolean).join(' · ') : '';
   $('oil-conn').innerHTML = `<dt>Tanks on the account</dt><dd>${esc(st.tankCount ?? '–')}${st.tankCount > 1 ? ' (showing the first)' : ''}</dd>
     <dt>Last checked</dt><dd>${st.lastChecked ? new Date(st.lastChecked * 1000).toLocaleString() : '–'}</dd>
-    <dt>Problem</dt><dd>${st.problem ? esc(st.problem) : 'None'}</dd>
-    ${r && r.totalLitres != null && r.litres != null ? `<dt>All oil incl. below the outlet</dt><dd>${Math.round(r.totalLitres).toLocaleString()} litres</dd>` : ''}`;
+    <dt>Problem</dt><dd>${st.problem ? esc(st.problem) : 'None'}</dd>`;
   try { oilHist = await (await api('api/oil/history?days=400')).json(); } catch(e){ return; }
-  const h = oilHist, recent = h.days.filter(d => d.date > ymd(new Date(Date.now() - 7 * 86400000)));
-  const week = recent.reduce((s, d) => s + d.used, 0);
-  $('oil-week').innerHTML = h.days.length ? litres(week) : '–';
-  $('oil-week-sub').textContent = h.ratePerDay != null ? `about ${h.ratePerDay.toFixed(1)} litres a day lately` : 'Needs a couple of days of readings';
+  const h = oilHist;
+  showOilAverage();
   $('oil-left').innerHTML = h.daysLeft == null ? '–' : `${h.daysLeft}<small>days</small>`;
   $('oil-left-sub').textContent = h.daysLeft == null ? 'Needs a couple of days of readings' :
-    `until the usable oil runs out at that rate, around ${new Date(Date.now() + h.daysLeft * 86400000).toLocaleDateString([], {day: 'numeric', month: 'short'})}`;
-  const last = h.deliveries.at(-1);
-  $('oil-del').innerHTML = last ? litres(last.litres) : '–';
-  $('oil-del-sub').textContent = last ? new Date(last.ts * 1000).toLocaleDateString([], {day: 'numeric', month: 'short', year: 'numeric'}) : 'None seen since connecting';
+    `until the usable oil runs out at the last two weeks' rate, around ${new Date(Date.now() + h.daysLeft * 86400000).toLocaleDateString([], {day: 'numeric', month: 'short'})}`;
+  const order = h.orders.filter(o => o.delivered).at(-1), seen = h.deliveries.at(-1);
+  const seenNewer = seen && (!order || seen.date > order.delivered);
+  $('oil-del').innerHTML = seenNewer ? litres(seen.litres) : order ? litres(order.litres) : '–';
+  $('oil-del-sub').textContent = seenNewer ? `${fmtD(seen.date, {day: 'numeric', month: 'short', year: 'numeric'})} (seen in the level)`
+    : order ? [fmtD(order.delivered, {day: 'numeric', month: 'short', year: 'numeric'}), order.pencePerLitre != null ? `${order.pencePerLitre}p a litre` : null, order.cost != null ? money(order.cost) : null].filter(Boolean).join(' · ')
+    : 'No deliveries found';
+  const spent = h.orders.reduce((s, o) => s + (o.cost ?? 0), 0), got = h.orders.reduce((s, o) => s + o.litres, 0);
+  $('oilOrders').innerHTML = h.orders.length ? '<tr><th>Delivered</th><th>Ordered</th><th>Litres</th><th>Price</th><th>Cost</th></tr>' +
+    h.orders.slice().reverse().map(o => `<tr><td>${o.delivered ? fmtD(o.delivered, {day: 'numeric', month: 'short', year: 'numeric'}) : esc(o.status)}</td><td>${fmtD(o.ordered, {day: 'numeric', month: 'short', year: 'numeric'})}</td><td>${o.litres.toLocaleString()} L</td><td>${o.pencePerLitre != null ? o.pencePerLitre + 'p/L' : '–'}</td><td>${money(o.cost)}</td></tr>`).join('') +
+    `<tr><th>Total</th><th></th><th>${got.toLocaleString()} L</th><th>${got ? (spent * 100 / got).toFixed(2) + 'p/L avg' : ''}</th><th>${money(spent)}</th></tr>`
+    : '<tr><td>No oil orders found on the account.</td></tr>';
   drawOil();
+}
+function showOilAverage(){
+  const h = oilHist; if (!h) return;
+  const key = $('oil-period').value, p = h.periods[key];
+  const asked = key === 'delivery' ? null : +key;
+  const started = h.readings.length ? fmtD(ymd(new Date(h.readings[0].ts * 1000)), {day: 'numeric', month: 'short'}) : null;
+  $('oil-avg').innerHTML = p ? `${p.perDay.toFixed(1)}<small>litres/day</small>` : '–';
+  $('oil-avg-sub').textContent = key === 'delivery' && !h.lastDelivered ? 'No delivery found in your orders'
+    : !p ? `Needs at least a day of readings${started ? ` – they start ${started}` : ''}`
+    : `${p.used.toLocaleString()} litres over ${p.days} days` + ((asked && p.days < asked * 0.9) || (key === 'delivery' && started) ? ` (readings start ${started})` : '');
 }
 function oilGroups(){
   const h = oilHist; if (!h?.readings.length) return [];
@@ -912,6 +937,8 @@ function drawOil(){
 }
 document.querySelectorAll('#oil-per button').forEach(b => b.onclick = () => {
   oilPer = b.dataset.per; try { localStorage.setItem('oilPer', oilPer); } catch(e){} drawOil(); });
+try { const p = localStorage.getItem('oilPeriod'); if (p && [...$('oil-period').options].some(o => o.value === p)) $('oil-period').value = p; } catch(e){}
+$('oil-period').onchange = () => { try { localStorage.setItem('oilPeriod', $('oil-period').value); } catch(e){} showOilAverage(); };
 $('oil-form').onsubmit = async ev => {
   ev.preventDefault();
   const email = $('oil-email').value.trim(), password = $('oil-password').value;

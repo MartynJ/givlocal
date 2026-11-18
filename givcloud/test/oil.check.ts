@@ -1,7 +1,7 @@
 // Checks reading BoilerJuice's tank page and working out oil use from a series of levels.
-import {parseTankPage, tankIdsOnPage} from "../src/oilClient.js";
-import {oilUsage, recentRate} from "../src/oilUsage.js";
-import {samplePage} from "./oilFixtures.js";
+import {parseOrdersPage, parseTankPage, tankIdsOnPage} from "../src/oilClient.js";
+import {oilUsage, recentRate, useSince} from "../src/oilUsage.js";
+import {connectedTankPage, ordersPage, samplePage} from "./oilFixtures.js";
 
 let failed = 0;
 const check = (name : string, ok : boolean, detail = "") => {
@@ -40,5 +40,20 @@ const rate = recentRate(points, 1225);
 check("recent rate about 10 a day", rate != null && Math.abs(rate - 10) < 1, rate?.toFixed(2));
 check("no rate from under two days", recentRate(points.slice(0, 10), 1225) === null);
 check("a lower level is never negative use", oilUsage([{ts: start, litres: 500}, {ts: start + 3600, litres: 520}], 1225).days.every((d) => d.used >= 0));
+
+
+// The real pages, as found on a BoilerJuice account.
+const c = parseTankPage(connectedTankPage(620, 1120));
+check("connected tank: usable, total, both percentages and size", c.litres === 620 && c.totalLitres === 1120 && c.percent === 25 && c.totalPercent === 45 && c.capacity === 2500, JSON.stringify(c));
+const e = parseTankPage(`<div id="usable-oil"><p>We estimate that you have 1120 litres of oil left in your tank.</p><div data-percentage="45"></div></div><input value="2500" class="form-control" type="text" name="tank_size" id="tank_size" />`);
+check("tank page without a monitor: one gauge is all the oil", e.litres === null && e.totalLitres === 1120 && e.totalPercent === 45 && e.percent === null && e.capacity === 2500, JSON.stringify(e));
+const orders = parseOrdersPage(ordersPage);
+check("two oil orders, shop order left out", orders.length === 2, JSON.stringify(orders.map((o) => o.order)));
+check("order details", orders[0].delivered === "2026-09-23" && orders[0].litres === 500 && orders[0].pencePerLitre === 107.95
+    && orders[1].ordered === "2026-02-28" && orders[1].litres === 1000, JSON.stringify(orders));
+
+const since = useSince(points, 1225, start + 4 * 86400);
+check("average over a period leaves out the delivery", since != null && Math.abs(since.perDay - 10) < 1.5, JSON.stringify(since));
+check("no average from under a day", useSince(points, 1225, points[points.length - 3].ts) === null);
 
 process.exit(failed ? 1 : 0);

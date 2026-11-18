@@ -36,8 +36,10 @@ const attributeOf = (html : string, has : RegExp, attribute : string) => {
 };
 
 // The part of the page from the element whose id contains `id`, so a percentage can be tied to the right gauge.
+// An exact id is preferred: the connected-tank page also has tabs whose ids merely contain it.
 const sectionAfter = (html : string, id : string) => {
-    const at = html.search(new RegExp(`id\\s*=\\s*"[^"]*${id}[^"]*"`, "i"));
+    let at = html.search(new RegExp(`id\\s*=\\s*"${id}"`, "i"));
+    if (at < 0) at = html.search(new RegExp(`id\\s*=\\s*"[^"]*${id}[^"]*"`, "i"));
     return at < 0 ? "" : html.slice(at, at + 4000);
 };
 
@@ -49,12 +51,39 @@ export const parseTankPage = (html : string) : TankReading => {
         totalLitres: number(text.match(/([\d,]+(?:\.\d+)?)\s*litres\s+of\s+oil\s+left/i)?.[1]),
         percent: number(usable.match(/data-percentage\s*=\s*"([\d.]+)"/i)?.[1]),
         totalPercent: number(total.match(/data-percentage\s*=\s*"([\d.]+)"/i)?.[1]),
-        capacity: number(attributeOf(html, /title\s*=\s*"tank-size-count"/i, "value")),
+        capacity: number(attributeOf(html, /(title|id)\s*=\s*"tank-size-count"|(id|name)\s*=\s*"tank_size"/i, "value")),
         levelName: html.match(/class\s*=\s*"status"[^>]*>\s*<p[^>]*>\s*([^<]{1,30}?)\s*</i)?.[1] ?? null,
     };
+    // A tank without a monitor gets one gauge, for all the oil, even though it sits where the usable-oil one would.
+    if (reading.litres == null && reading.totalLitres != null && reading.totalPercent == null) {
+        reading.totalPercent = reading.percent;
+        reading.percent = null;
+    }
     if (reading.litres == null && reading.totalLitres == null && reading.percent == null)
         throw new OilError("Couldn't find the oil level on BoilerJuice's tank page – the page may have changed");
     return reading;
+};
+
+export type OilOrder = {order : string, ordered : string, delivered : string | null, litres : number, pencePerLitre : number | null, status : string};
+
+const months : Record<string, string> = {jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06", jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12"};
+const isoDate = (d : string, m : string, y : string) => months[m.slice(0, 3).toLowerCase()] ? `${y}-${months[m.slice(0, 3).toLowerCase()]}-${d.padStart(2, "0")}` : null;
+
+// The oil orders table: order number, date ordered, litres, price in pence per litre and a status that says when it was delivered.
+export const parseOrdersPage = (html : string) : Array<OilOrder> => {
+    const text = decode(html.replace(/<script[\s\S]*?<\/script>/gi, " "));
+    const start = text.search(/Processed Orders/i);
+    const section = start < 0 ? text : text.slice(start, (text.slice(start).search(/Shop Orders/i) + start) || undefined);
+    const row = /(\d{5,})\s+(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})\s+at\s+[\d:]+\s*[ap]m\s+([\d,]+(?:\.\d+)?)\s+([\d.]+)\s+(.*?)(?=\s+\d{5,}\s+\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}\s+at|$)/gi;
+    const orders : Array<OilOrder> = [];
+    for (const m of section.matchAll(row)) {
+        const ordered = isoDate(m[2], m[3], m[4]), litres = number(m[5]);
+        if (!ordered || litres == null) continue;
+        const status = m[7].replace(/\s*(View|Print)( order)?\s*/gi, " ").trim().slice(0, 80);
+        const d = status.match(/delivered\s+on\s+(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})/i);
+        orders.push({order: m[1], ordered, delivered: d ? isoDate(d[1], d[2], d[3]) : null, litres, pencePerLitre: number(m[6]), status});
+    }
+    return orders;
 };
 
 export const tankIdsOnPage = (html : string) =>
@@ -134,8 +163,22 @@ export class BoilerJuiceClient {
         return fromUrl && !ids.includes(fromUrl) ? [fromUrl, ...ids] : ids;
     }
 
+    // Any signed-in page on the account, for working out where BoilerJuice keeps things.
+    async raw(path : string) { return this.page(path); }
+
+    // The connected-tank page (for a tank with a BoilerJuice monitor) has usable and total oil; the tank's own page has
+    // the size, and is all there is for a tank without a monitor.
     async tank(id : string) : Promise<TankReading> {
         if (!/^\d+$/.test(id)) throw new OilError("Bad tank id");
-        return parseTankPage((await this.page(`${tanksPath}/${id}/edit`)).html);
+        const own = () => this.page(`${tanksPath}/${id}/edit`).then((p) => parseTankPage(p.html));
+        let connected : TankReading | null = null;
+        try { connected = parseTankPage((await this.page("/uk/users/connected_tank")).html); } catch { /* no monitor */ }
+        if (!connected) return own();
+        if (connected.capacity == null) connected.capacity = (await own().catch(() => null))?.capacity ?? null;
+        return connected;
+    }
+
+    async orders() : Promise<Array<OilOrder>> {
+        return parseOrdersPage((await this.page("/uk/users/orders")).html);
     }
 }

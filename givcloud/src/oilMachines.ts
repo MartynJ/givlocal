@@ -38,8 +38,8 @@ export const oilLinkMachine = (oil : OilService, persistence : JobPersistence, q
         }
     };
 
-    const stayLinked = new Await("Linked – tank level read every few hours", "HUMAN",
-        "The level is read from BoilerJuice every three hours; disconnect from the dashboard to remove the sign-in");
+    const stayLinked = new Await("Linked – tank level read once a day", "HUMAN",
+        "The level is read from BoilerJuice once a day; disconnect from the dashboard to remove the sign-in");
     stayLinked.fields = ["disconnect"];
     stayLinked.resolveUrl = "./#oil";
 

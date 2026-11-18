@@ -1,9 +1,10 @@
 // A stand-in for boilerjuice.com, for trying the oil panel without a real account:
 //   npx tsx test/fakeBoilerJuice.ts            (listens on 4020)
 //   BOILERJUICE_BASE=http://localhost:4020 npx tsx src/main.ts
-// Sign in on the dashboard with the test account below. The tank level falls by 7 litres on each read.
+// Sign in on the dashboard with the test account below. The tank level falls by 7 litres on each read of the
+// connected-tank page; the orders page lists two deliveries.
 import {createServer} from "node:http";
-import {samplePage} from "./oilFixtures.js";
+import {connectedTankPage, ordersPage, samplePage} from "./oilFixtures.js";
 
 export const testAccount = {email: "tester@example.test", password: "fake-boilerjuice-pass"};
 const token = "csrf-token-for-tests";
@@ -36,6 +37,11 @@ createServer((req, res) => {
     if (!signedIn) return send(302, "", {location: "/uk/users/login"});
     if (url.pathname === "/uk/users/dashboard") return send(200, "<p>Welcome</p>");
     if (url.pathname === "/uk/users/tanks") return send(200, `<a href="/uk/users/tanks/777/edit">My tank</a>`);
+    if (url.pathname === "/uk/users/connected_tank") {
+        level -= 7;
+        return send(200, connectedTankPage(level - 500, level));
+    }
+    if (url.pathname === "/uk/users/orders") return send(200, ordersPage);
     if (url.pathname === "/uk/users/tanks/777/edit") {
         level -= 7;
         return send(200, samplePage(level, level + 100));

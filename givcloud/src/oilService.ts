@@ -2,10 +2,10 @@ import {Actor, Code, Human, SecretStore, StateMachine} from "anbaric";
 import type {HouseholdMonitor} from "./householdMonitor.js";
 import {BoilerJuiceClient, OilError, TankReading} from "./oilClient.js";
 import type {OilReadings, StoredOilReading} from "./oilReadings.js";
-import {OilPoint, oilUsage, recentRate} from "./oilUsage.js";
+import {OilPoint, oilUsage, recentRate, useSince} from "./oilUsage.js";
 
 const loginName = "boilerjuice-login";
-const checkEverySeconds = 3 * 3600 - 300;   // BoilerJuice's figures change a few times a day at most
+const checkEverySeconds = 23 * 3600;   // once a day is plenty: BoilerJuice updates the level about daily
 const reader = new Code("boilerjuice");
 
 export type OilLink = {tankId : string, tankCount : number};
@@ -80,7 +80,14 @@ export class OilService {
         if (!tanks.length) throw new OilError("Signed in to BoilerJuice, but found no tank on the account");
         const first = await api.tank(tanks[0]);
         await this.store(first);
+        await this.saveOrders(api);
         return {tankId: tanks[0], tankCount: tanks.length, capacity: first.capacity};
+    }
+
+    // Deliveries come from the account's oil orders. Failing to read them doesn't stop the level being recorded.
+    private async saveOrders(api : BoilerJuiceClient) {
+        try { await this.readings.saveOrders(await api.orders(), reader); }
+        catch (error) { console.error("oil orders", error); }
     }
 
     private async store(reading : TankReading) {
@@ -88,7 +95,7 @@ export class OilService {
         this.lastCheck = {at: Date.now() / 1000, problem: null};
     }
 
-    // ---- checking the level: from the hourly run, but only every few hours
+    // ---- checking the level: from the hourly run, but only once a day
 
     poll(force = false) : Promise<{checked : boolean, problem : string | null}> {
         const run = this.queue.then(() => this.pollNow(force));
@@ -102,13 +109,47 @@ export class OilService {
         const last = Math.max(this.lastCheck?.at ?? 0, (await this.readings.latest())?.ts ?? 0);
         if (!force && Date.now() / 1000 - last < checkEverySeconds) return {checked: false, problem: null};
         try {
-            await this.store(await (await this.api()).tank(link.tankId));
+            const api = await this.api();
+            await this.store(await api.tank(link.tankId));
+            await this.saveOrders(api);
             return {checked: true, problem: null};
         } catch (error) {
             const problem = error instanceof Error ? error.message : String(error);
             this.lastCheck = {at: Date.now() / 1000, problem};
             return {checked: false, problem};
         }
+    }
+
+    // The shape of a BoilerJuice page (ids, the text around oil figures, links, chart data), without the whole page,
+    // so changes to BoilerJuice's site can be diagnosed. Only paths under /uk/users/ on the account.
+    async diagnostics(path? : string) {
+        const link = await this.linked();
+        const target = path ?? (link ? `/uk/users/tanks/${link.tankId}/edit` : "/uk/users/tanks");
+        if (!/^\/uk\/users\/[\w\-\/]*$/.test(target)) throw new OilError("Only /uk/users/ pages can be inspected");
+        const {html, url} = await (await this.api()).raw(target);
+        const text = html.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ")
+            .replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ");
+        const around = (re : RegExp, width = 90) => [...text.matchAll(re)].slice(0, 40)
+            .map((m) => text.slice(Math.max(0, m.index! - width), m.index! + m[0].length + width).trim())
+            .map((snippet) => snippet.replace(/(billing|delivery)?\s*address.*$/i, "[address left out]")
+                .replace(/\b[A-Z]{1,2}\d[A-Z\d]?(\s*\d[A-Z]{2})?\b/g, "[postcode]"));
+        // BoilerJuice's pages carry the account holder's name, email and address; those parts are left out.
+        const personal = /(dataLayer|email|firstName|surname|address|postcode|phone)/i;
+        const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1].trim())
+            .filter((js) => !personal.test(js))
+            .filter((js) => /\d{2,}/.test(js) && /(data|label|chart|series|level|litre|usage|history|reading)/i.test(js))
+            .map((js) => js.length > 1500 ? js.slice(0, 1500) + ` …(${js.length} chars)` : js).slice(0, 12);
+        return {
+            path: new URL(url).pathname, bytes: html.length, title: html.match(/<title>([^<]*)/i)?.[1]?.trim() ?? null,
+            ids: [...new Set([...html.matchAll(/\bid\s*=\s*"([^"]+)"/gi)].map((m) => m[1]))].slice(0, 150),
+            dataAttributes: [...new Set([...html.matchAll(/\b(data-[\w-]+)\s*=\s*"([^"]{0,40})"/gi)].map((m) => `${m[1]}="${m[2]}"`))].slice(0, 120),
+            inputs: [...html.matchAll(/<input\b[^>]*>/gi)].map((m) => m[0]).filter((t) => !/type\s*=\s*"(hidden|password|email)"/i.test(t)
+                && !/name\s*=\s*"[^"]*(name|address|phone|postcode|email)[^"]*"/i.test(t)).slice(0, 40),
+            litres: around(/litre/gi), percent: around(/\d+\s*%/g, 60), usage: around(/(usage|history|consumption|per day|daily)/gi),
+            links: [...new Set([...html.matchAll(/href\s*=\s*"(\/uk\/users\/[^"#?]*)/gi)].map((m) => m[1]))],
+            apiLike: [...new Set([...html.matchAll(/["'](\/(?:api|uk\/api|uk\/users)[^"'\s]*(?:json|readings|levels|history|usage|chart)[^"'\s]*)["']/gi)].map((m) => m[1]))],
+            scripts,
+        };
     }
 
     // ---- what the dashboard shows
@@ -133,9 +174,17 @@ export class OilService {
         const rate = recentRate(points, capacity);
         const latest = rows.at(-1);
         const usable = latest?.litres ?? (latest ? level(latest) : null);
+        const orders = (await this.readings.orders()).map((o) => ({...o,
+            cost: o.pencePerLitre == null ? null : Math.round(o.litres * o.pencePerLitre) / 100}));
+        const lastDelivered = [...orders].reverse().find((o) => o.delivered)?.delivered ?? null;
+        const now = Date.now() / 1000;
+        const periods = Object.fromEntries([["7", 7], ["30", 30], ["90", 90], ["365", 365]]
+            .map(([k, n]) => [k, useSince(points, capacity, now - (n as number) * 86400)]));
+        periods.delivery = lastDelivered ? useSince(points, capacity, Date.parse(lastDelivered + "T00:00:00Z") / 1000) : null;
         return {
             capacity, readings: rows.map((r) => ({ts: r.ts, litres: r.litres, totalLitres: r.totalLitres, percent: r.percent})),
-            days: usage, deliveries, ratePerDay: rate == null ? null : Math.round(rate * 10) / 10,
+            days: usage, deliveries, orders, lastDelivered, periods,
+            ratePerDay: rate == null ? null : Math.round(rate * 10) / 10,
             daysLeft: rate && usable != null ? Math.floor(usable / rate) : null,
         };
     }

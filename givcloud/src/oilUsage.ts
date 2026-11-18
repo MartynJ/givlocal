@@ -46,3 +46,20 @@ export const recentRate = (points : Array<OilPoint>, capacity : number | null, w
     }
     return Math.max(0, used) / span;
 };
+
+// Litres used and the average per day from `from` to the latest reading, leaving out deliveries. The window is cut
+// to the readings there are, so `days` says how much of it the figure really covers. Null with under a day of readings.
+export const useSince = (points : Array<OilPoint>, capacity : number | null, from : number) => {
+    const recent = points.filter((p) => p.ts >= from);
+    if (recent.length < 2) return null;
+    const days = (recent[recent.length - 1].ts - recent[0].ts) / 86400;
+    if (days < 1) return null;
+    const threshold = deliveryThreshold(capacity);
+    let used = 0;
+    for (let i = 1; i < recent.length; i++) {
+        const fall = recent[i - 1].litres - recent[i].litres;
+        if (-fall <= threshold) used += fall;
+    }
+    used = Math.max(0, used);
+    return {used: Math.round(used), days: Math.round(days * 10) / 10, perDay: Math.round(used / days * 10) / 10};
+};

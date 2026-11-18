@@ -170,6 +170,8 @@ const oilRoute = async (request : IncomingMessage, response : ServerResponse, pa
             return json(response, 200, await oil.history(n));
         }
         if (request.method === "POST" && path === "/api/oil/refresh") return json(response, 200, await oil.poll(true));
+        if (request.method === "GET" && path === "/api/oil/diagnostics")
+            return json(response, 200, await oil.diagnostics(url.searchParams.get("path") ?? undefined));
         if (request.method === "POST" && path === "/api/oil/login") {
             const body = await readBody(request, 10_000);
             const email = String(body?.email ?? "").trim(), password = String(body?.password ?? "");
